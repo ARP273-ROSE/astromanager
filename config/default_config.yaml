@@ -1,0 +1,79 @@
+# ==============================================================================
+# ASTROMANAGER - DEFAULT CONFIGURATION
+# ==============================================================================
+# This file contains the default configuration for AstroManager.
+# User configuration is stored in: ~/.astromanager/config.yaml
+# ==============================================================================
+
+application:
+  version: "1.0.0"
+  language: "auto"  # Options: auto, en, fr
+  theme: "cosmic_dark"
+
+system:
+  workers: 0  # 0 = auto-detect based on CPU cores and RAM
+  batch_size: 1000  # Number of files to process in each batch
+  cache_size: 5000  # Maximum number of cached items
+  enable_caching: true  # Enable multi-tier caching system
+
+observatory:
+  # Default observatory location (Greenwich Observatory)
+  # Update these values to match your location for accurate weather data
+  latitude: 51.4769
+  longitude: -0.0005
+  elevation_m: 46
+  timezone: "UTC"
+
+analysis:
+  enable_simbad: true  # Resolve target names via SIMBAD
+  enable_plate_solving: false  # Use plate solving for focal reducer detection
+  enable_weather_fetch: false  # Fetch historical weather data
+  duplicate_detection: true  # Detect and report duplicate files
+  generate_thumbnails: false  # Generate image thumbnails in reports
+  generate_graphs: true  # Generate statistical graphs
+  generate_latex: true  # Generate LaTeX/PDF reports
+  generate_csv: true  # Export CSV data files
+
+compression:
+  default_profile: "zlib_6"  # Default compression profile for XISF output format
+  # This profile is used when compressing files to XISF format (Compression tab)
+  # Available profiles: zlib_1-9, zstd_3/6/10/19, lz4, lz4_hc, none
+  delete_source: false  # Delete source files after successful compression
+  verify_integrity: true  # Verify file integrity with SHA-256
+  quarantine_failed: true  # Move failed compressions to quarantine folder
+
+plate_solving:
+  solver: "astap"  # Options: astap, astrometry
+  astap_path: null  # Path to ASTAP executable (null = auto-detect)
+  astrometry_path: null  # Path to Astrometry.net (null = auto-detect)
+  timeout_sec: 60  # Maximum time to wait for plate solving
+
+weather:
+  api_provider: "open-meteo"  # Options: open-meteo, openweathermap
+  api_key: null  # API key (required for openweathermap, not for open-meteo)
+  cache_duration_days: 365  # How long to cache historical weather data
+
+bug_reporting:
+  enabled: true  # Enable anonymous crash reporting
+  endpoint_url: "https://bugs.astromanager.io/report"
+
+ui:
+  window_width: 1200
+  window_height: 880
+  console_max_lines: 1000  # Maximum lines in console before clearing old ones
+  show_splash_screen: true
+
+# ==============================================================================
+# Advanced Settings
+# ==============================================================================
+
+advanced:
+  # Performance tuning
+  max_memory_gb: null  # Maximum memory usage (null = no limit)
+  io_buffer_size: 8192  # I/O buffer size in bytes
+
+  # Logging
+  log_level: "INFO"  # Options: DEBUG, INFO, WARNING, ERROR, CRITICAL
+  log_file: "~/.astromanager/astromanager.log"
+  log_max_size_mb: 10
+  log_backup_count: 3
