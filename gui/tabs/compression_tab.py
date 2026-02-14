@@ -137,32 +137,32 @@ class CompressionTab(QWidget):
         src_layout.addLayout(src_row)
         layout.addWidget(src_group)
 
-        # Target folder
-        tgt_group = QGroupBox(self._tr("📂 Target Folder", "📂 Dossier Cible"))
-        tgt_layout = QVBoxLayout(tgt_group)
-        tgt_layout.setSpacing(6)
+        # Backup folder
+        bak_group = QGroupBox(self._tr("📂 Backup Folder", "📂 Dossier de Sauvegarde"))
+        bak_layout = QVBoxLayout(bak_group)
+        bak_layout.setSpacing(6)
 
-        tgt_desc = QLabel(self._tr(
-            "Output folder for compressed files. Leave empty to compress in-place.",
-            "Dossier de sortie pour les fichiers compressés. Laisser vide = même dossier."
+        bak_desc = QLabel(self._tr(
+            "Originals are moved here after successful compression + verification. Leave empty to skip backup.",
+            "Les originaux sont déplacés ici après compression + vérification réussie. Laisser vide = pas de sauvegarde."
         ))
-        tgt_desc.setStyleSheet("color: #7a8498;")
-        tgt_layout.addWidget(tgt_desc)
+        bak_desc.setStyleSheet("color: #7a8498;")
+        bak_layout.addWidget(bak_desc)
 
-        tgt_row = QHBoxLayout()
-        self.target_input = QLineEdit()
-        self.target_input.setPlaceholderText(self._tr(
-            "Output folder (leave empty = same folder)",
-            "Dossier sortie (vide = même dossier)"
+        bak_row = QHBoxLayout()
+        self.backup_input = QLineEdit()
+        self.backup_input.setPlaceholderText(self._tr(
+            "Backup folder (leave empty = no backup)",
+            "Dossier de sauvegarde (vide = pas de sauvegarde)"
         ))
-        self.target_input.setMinimumHeight(24)
-        tgt_row.addWidget(self.target_input)
-        tgt_btn = QPushButton(self._tr("Browse...", "Parcourir..."))
-        tgt_btn.setMinimumHeight(24)
-        tgt_btn.clicked.connect(lambda: self._browse('target'))
-        tgt_row.addWidget(tgt_btn)
-        tgt_layout.addLayout(tgt_row)
-        layout.addWidget(tgt_group)
+        self.backup_input.setMinimumHeight(24)
+        bak_row.addWidget(self.backup_input)
+        bak_btn = QPushButton(self._tr("Browse...", "Parcourir..."))
+        bak_btn.setMinimumHeight(24)
+        bak_btn.clicked.connect(lambda: self._browse('backup'))
+        bak_row.addWidget(bak_btn)
+        bak_layout.addLayout(bak_row)
+        layout.addWidget(bak_group)
 
         # Output format
         format_group = QGroupBox(self._tr("📤 Output Format", "📤 Format de Sortie"))
@@ -261,21 +261,9 @@ class CompressionTab(QWidget):
         opts_layout = QVBoxLayout(opts_group)
         opts_layout.setSpacing(8)
 
-        self.cb_delete_source = QCheckBox(self._tr(
-            "Delete source files after successful compression",
-            "Supprimer les fichiers source après compression réussie"
-        ))
-        self.cb_delete_source.setToolTip(self._tr(
-            "WARNING: Delete original files after successful compression",
-            "ATTENTION : Supprimer les fichiers originaux après compression réussie"
-        ))
-        self.cb_delete_source.setChecked(self.config.get('compression.delete_source', False))
-        self.cb_delete_source.setStyleSheet("color: #b89090;")
-        opts_layout.addWidget(self.cb_delete_source)
-
         self.cb_verify = QCheckBox(self._tr(
-            "Verify file integrity after compression (SHA-256)",
-            "Vérifier l'intégrité des fichiers après compression (SHA-256)"
+            "Verify file integrity after compression",
+            "Vérifier l'intégrité des fichiers après compression"
         ))
         self.cb_verify.setChecked(self.config.get('compression.verify_integrity', True))
         opts_layout.addWidget(self.cb_verify)
@@ -329,7 +317,7 @@ class CompressionTab(QWidget):
             if which == 'source':
                 self.source_input.setText(folder)
             else:
-                self.target_input.setText(folder)
+                self.backup_input.setText(folder)
 
     def _get_selected_profile(self):
         btn = self.profile_group.checkedButton()
@@ -381,7 +369,7 @@ class CompressionTab(QWidget):
         self.stop_btn.setVisible(True)
 
         profile = self._get_selected_profile()
-        target = self.target_input.text().strip() or ''
+        backup = self.backup_input.text().strip() or ''
 
         self.worker = UnifiedWorker()
         self.worker.output_signal.connect(lambda t: self.console.append(t.rstrip()) if t.strip() else None)
@@ -392,11 +380,11 @@ class CompressionTab(QWidget):
             job_type=JobType.COMPRESSION,
             params={
                 'source_folder': source,
-                'target_folder': target,
+                'backup_folder': backup,
                 'profile': profile,
                 'output_format': self._get_selected_format(),
-                'delete_source': self.cb_delete_source.isChecked(),
                 'verify_integrity': self.cb_verify.isChecked(),
+                'lang': self.lang,
             },
             priority=8
         )

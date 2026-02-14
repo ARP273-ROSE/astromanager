@@ -41,19 +41,65 @@ class WorkerJob:
     priority: int = 5  # 1-10, 10 = highest
 
 
-def _compress_single_file(task: Dict) -> Dict:
-    """Compress a single file (top-level for ProcessPoolExecutor pickling)."""
+def _verify_output_file(output_path: str) -> Dict:
+    """Verify integrity of a compressed output file by reading its data.
+
+    Returns {'success': True} or {'success': False, 'error': '...'}.
+    On failure, deletes the corrupt file.
+    """
     import os
+    ext = output_path.lower()
+    try:
+        if ext.endswith('.xisf'):
+            from modules.compression import XISFReader
+            reader = XISFReader(output_path)
+            reader.read_image()
+        elif ext.endswith('.fits.fz') or ext.endswith('.fz'):
+            from astropy.io import fits as astropy_fits
+            with astropy_fits.open(output_path) as hdul:
+                for hdu in hdul:
+                    _ = hdu.data
+        elif ext.endswith(('.fits', '.fit')):
+            from astropy.io import fits as astropy_fits
+            with astropy_fits.open(output_path) as hdul:
+                _ = hdul[0].data
+        else:
+            return {'success': True}  # Unknown format, skip verification
+        return {'success': True}
+    except Exception as e:
+        # Delete corrupt output file
+        try:
+            if os.path.exists(output_path):
+                os.remove(output_path)
+        except OSError:
+            pass
+        return {'success': False, 'error': f'Integrity check failed: {e}'}
+
+
+def _compress_single_file(task: Dict) -> Dict:
+    """Compress a single file (top-level for ProcessPoolExecutor pickling).
+
+    Workflow:
+      1. Compress in-place (out_dir = same directory as source)
+      2. If verify_integrity → _verify_output_file()
+      3. If backup_folder → move original to backup preserving directory tree
+    """
+    import os
+    import shutil
     try:
         filepath = task['filepath']
         src_ext = task['src_ext']
         basename = task['basename']
         out_dir = task['out_dir']
         profile_name = task['profile_name']
-        output_format = task.get('output_format', 'xisf')  # xisf, fz, fits
-        delete_source = task['delete_source']
+        output_format = task.get('output_format', 'xisf')
+        backup_folder = task.get('backup_folder', '')
+        source_folder = task.get('source_folder', '')
+        verify_integrity = task.get('verify_integrity', True)
 
         os.makedirs(out_dir, exist_ok=True)
+
+        out_path = None
 
         # Determine conversion based on source extension + target format
         if output_format == 'xisf':
@@ -105,13 +151,26 @@ def _compress_single_file(task: Dict) -> Dict:
             return {'success': False, 'file': filepath, 'error': f'Unknown output format: {output_format}'}
 
         # Check result from conversion function
-        if result.get('status') == 'success':
-            if delete_source and result.get('output') and os.path.exists(result['output']):
-                if os.path.abspath(filepath) != os.path.abspath(result['output']):
-                    os.remove(filepath)
-            return {'success': True, 'file': filepath}
-        else:
+        if result.get('status') != 'success':
             return {'success': False, 'file': filepath, 'error': result.get('message', 'Conversion failed')}
+
+        actual_output = result.get('output', out_path)
+
+        # Step 2: Verify integrity of compressed output
+        if verify_integrity and actual_output and os.path.exists(actual_output):
+            verify_result = _verify_output_file(actual_output)
+            if not verify_result['success']:
+                return {'success': False, 'file': filepath, 'error': verify_result['error']}
+
+        # Step 3: Move original to backup folder (preserving directory tree)
+        if backup_folder and source_folder:
+            if os.path.abspath(filepath) != os.path.abspath(actual_output):
+                rel_path = os.path.relpath(filepath, source_folder)
+                backup_path = os.path.join(backup_folder, rel_path)
+                os.makedirs(os.path.dirname(backup_path), exist_ok=True)
+                shutil.move(filepath, backup_path)
+
+        return {'success': True, 'file': filepath}
 
     except Exception as e:
         return {'success': False, 'file': task.get('filepath', '?'), 'error': str(e)}
@@ -749,8 +808,11 @@ class UnifiedWorker(QThread):
 
             # ── Post-analysis: Compress FITS → XISF ──
             if options.get('compress_fits', False) and not self.should_stop:
-                print("\n🗜️ Compressing FITS → XISF...")
-                self.progress_signal.emit(0, 1, "Compressing FITS files...")
+                _ctr = lambda en, fr: fr if lang == 'fr' else en
+                print(_ctr("\n🗜️ Compressing FITS → XISF...",
+                           "\n🗜️ Compression FITS → XISF..."))
+                self.progress_signal.emit(0, 1, _ctr("Compression: FITS → XISF...",
+                                                      "Compression : FITS → XISF..."))
                 if hasattr(fag, 'compress_fits_to_xisf'):
                     # compress_fits_to_xisf(source_root, backup_folder, workers, add_to_duplicates, check_abort)
                     # It walks source_root internally to find FITS files
@@ -771,8 +833,12 @@ class UnifiedWorker(QThread):
                         for i, fp in enumerate(fits_files):
                             if self.should_stop:
                                 break
-                            self.progress_signal.emit(i + 1, len(fits_files),
-                                f"Compressing: {os.path.basename(fp)}")
+                            done = i + 1
+                            n = len(fits_files)
+                            pct = int(done * 100 / n) if n else 100
+                            lbl = f"Compression : {done}/{n} ({pct}%) — {os.path.basename(fp)}" if lang == 'fr' \
+                                else f"Compression: {done}/{n} ({pct}%) — {os.path.basename(fp)}"
+                            self.progress_signal.emit(done, n, lbl)
                             try:
                                 out_path = os.path.splitext(fp)[0] + '.xisf'
                                 fits_to_xisf(fp, out_path)
@@ -817,11 +883,12 @@ class UnifiedWorker(QThread):
 
         files = params.get('files', [])
         source_folder = params.get('source_folder', '')
-        target_folder = params.get('target_folder', '')
+        backup_folder = params.get('backup_folder', '')
         profile_name = params.get('profile', 'zlib_6')
         output_format = params.get('output_format', 'xisf')
-        delete_source = params.get('delete_source', False)
         verify_integrity = params.get('verify_integrity', True)
+        lang = params.get('lang', 'en')
+        _tr = lambda en, fr: fr if lang == 'fr' else en
 
         # Validate profile exists
         if profile_name not in COMPRESSION_PROFILES:
@@ -841,7 +908,8 @@ class UnifiedWorker(QThread):
 
         total = len(files)
         if total == 0:
-            print("No files found to compress.")
+            print(_tr("No files found to compress.",
+                       "Aucun fichier à compresser."))
             return {'processed': 0, 'errors': 0}
 
         # Auto-detect worker count for compression (CPU-bound)
@@ -851,8 +919,10 @@ class UnifiedWorker(QThread):
             workers = max(2, min(cpu_count - 1, 8))
 
         fmt_label = {'xisf': 'XISF', 'fz': 'FITS.FZ', 'fits': 'FITS'}
-        print(f"🗜️ Converting {total} files → {fmt_label.get(output_format, output_format)} "
-              f"with {profile_name} ({workers} workers)...")
+        print(_tr(f"🗜️ Converting {total} files → {fmt_label.get(output_format, output_format)} "
+                  f"with {profile_name} ({workers} workers)...",
+                  f"🗜️ Conversion de {total} fichiers → {fmt_label.get(output_format, output_format)} "
+                  f"avec {profile_name} ({workers} workers)..."))
 
         # Build task list with output paths
         tasks = []
@@ -867,11 +937,8 @@ class UnifiedWorker(QThread):
             else:
                 basename = Path(filepath).stem
 
-            if target_folder:
-                rel_path = os.path.relpath(filepath, source_folder) if source_folder else os.path.basename(filepath)
-                out_dir = os.path.join(target_folder, os.path.dirname(rel_path))
-            else:
-                out_dir = os.path.dirname(filepath)
+            # Always compress in-place (same directory as source)
+            out_dir = os.path.dirname(filepath)
 
             tasks.append({
                 'filepath': filepath,
@@ -880,7 +947,9 @@ class UnifiedWorker(QThread):
                 'out_dir': out_dir,
                 'profile_name': profile_name,
                 'output_format': output_format,
-                'delete_source': delete_source,
+                'backup_folder': backup_folder,
+                'source_folder': source_folder,
+                'verify_integrity': verify_integrity,
             })
 
         processed = 0
@@ -912,11 +981,17 @@ class UnifiedWorker(QThread):
                     errors += 1
                     print(f"  ❌ {os.path.basename(filepath)}: {e}")
 
-                self.progress_signal.emit(processed + errors, total,
-                                          f"Compressing: {os.path.basename(filepath)}")
+                done = processed + errors
+                pct = int(done * 100 / total) if total else 100
+                phase = _tr(
+                    f"Compression: {done}/{total} ({pct}%) — {os.path.basename(filepath)}",
+                    f"Compression : {done}/{total} ({pct}%) — {os.path.basename(filepath)}"
+                )
+                self.progress_signal.emit(done, total, phase)
 
         result = {'processed': processed, 'errors': errors, 'total': total}
-        print(f"\n✅ Compression complete: {processed}/{total} files, {errors} errors")
+        print(_tr(f"\n✅ Compression complete: {processed}/{total} files, {errors} errors",
+                  f"\n✅ Compression terminée : {processed}/{total} fichiers, {errors} erreurs"))
         return result
 
     def _handle_header_edit(self, params: Dict) -> Dict:
