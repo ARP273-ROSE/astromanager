@@ -23,8 +23,8 @@ from PyQt6.QtWidgets import (
     QGroupBox, QFormLayout, QSpinBox, QDoubleSpinBox,
     QLineEdit, QCheckBox, QComboBox, QScrollArea
 )
-from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QFont, QTextCursor, QAction, QIcon
+from PyQt6.QtCore import Qt, QTimer, QUrl
+from PyQt6.QtGui import QFont, QTextCursor, QAction, QIcon, QDesktopServices
 
 from core.config import get_config
 from core.signals import signals
@@ -169,6 +169,14 @@ class AstroManagerWindow(QMainWindow):
         self.eta_label.setStyleSheet(f"color: {COLORS['accent_yellow']}; font-size: 9pt;")
         self.eta_label.setFixedWidth(120)
         progress_layout.addWidget(self.eta_label)
+
+        coffee_btn = QPushButton("☕")
+        coffee_btn.setFixedSize(22, 22)
+        coffee_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        coffee_btn.setToolTip("Buy me a coffee")
+        coffee_btn.setStyleSheet("QPushButton { border: none; font-size: 9pt; color: #555; padding: 0; } QPushButton:hover { color: #c8a86e; }")
+        coffee_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl("https://buymeacoffee.com/orlytourbou")))
+        progress_layout.addWidget(coffee_btn)
 
         main_layout.addLayout(progress_layout)
 
@@ -509,7 +517,8 @@ class AstroManagerWindow(QMainWindow):
             </ul>
             <p>{self._tr("License: MIT", "Licence: MIT")}</p>
             <p>{self._tr("Made with love for the astrophotography community.",
-                         "Fait avec amour pour la communauté d'astrophotographie.")}</p>"""
+                         "Fait avec amour pour la communauté d'astrophotographie.")}</p>
+            <p style="font-size: 8pt; color: #666;"><a href="https://buymeacoffee.com/orlytourbou" style="color: #777; text-decoration: none;">☕</a></p>"""
         )
 
     def _show_bug_dialog(self):
