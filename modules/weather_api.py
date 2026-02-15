@@ -616,8 +616,10 @@ def _ha_to_time(ha_hours: float, ra_hours: float, lst_midnight: float,
         # Adjust so transit near midnight is shown correctly
         if dt_hours > 18:
             dt_hours -= 24
-        hour = int(dt_hours) % 24
-        minute = int((dt_hours % 1) * 60)
+        # Convert to total minutes to avoid negative fractional hour issues
+        total_minutes = int(round(dt_hours * 60)) % 1440
+        hour = total_minutes // 60
+        minute = total_minutes % 60
         return f"{hour:02d}:{minute:02d}"
     except Exception:
         return None

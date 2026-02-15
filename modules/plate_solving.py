@@ -57,8 +57,8 @@ def find_astap_executable() -> Optional[str]:
             home / "AppData" / "Local" / "astap" / "astap_cli.exe",
         ]
         # Also check D: and E: drives
-        for drive in ['D:', 'E:']:
-            common_paths.append(Path(drive) / os.sep / "astap" / "astap_cli.exe")
+        for drive in ['D:\\', 'E:\\']:
+            common_paths.append(Path(drive) / "astap" / "astap_cli.exe")
     elif sys.platform == 'darwin':
         common_paths = [
             Path("/usr/local/bin/astap_cli"),
@@ -374,7 +374,13 @@ class PlateSolver:
         """
         # Expected plate scale without reducer
         # scale = (pixel_size / focal_length) * 206.265
+        if not native_focal_mm or not pixel_size_um:
+            return {'detected': False, 'ratio': 1.0, 'reducer_name': None,
+                    'effective_focal': native_focal_mm}
         expected_scale = (pixel_size_um / native_focal_mm) * 206.265
+        if expected_scale == 0:
+            return {'detected': False, 'ratio': 1.0, 'reducer_name': None,
+                    'effective_focal': native_focal_mm}
 
         # Actual ratio
         ratio = measured_scale / expected_scale

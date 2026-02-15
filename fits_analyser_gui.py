@@ -30,6 +30,18 @@ import subprocess
 import importlib.util
 import multiprocessing
 
+# Fix Windows console encoding (cp1252 cannot handle emojis)
+if sys.platform == 'win32':
+    import io
+    if hasattr(sys.stdout, 'reconfigure'):
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    elif not isinstance(sys.stdout, io.TextIOWrapper) or sys.stdout.encoding != 'utf-8':
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    if hasattr(sys.stderr, 'reconfigure'):
+        sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    elif not isinstance(sys.stderr, io.TextIOWrapper) or sys.stderr.encoding != 'utf-8':
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+
 # Check Python version
 if sys.version_info < (3, 8):
     print("⚠️  WARNING: This program requires Python 3.8 or higher.")
@@ -2713,7 +2725,7 @@ def has_warning_been_shown(warning_type="telescope_unknown"):
     """Check if a warning has already been shown using file-based cache"""
     try:
         if os.path.exists(_warning_cache_file):
-            with open(_warning_cache_file, 'r') as f:
+            with open(_warning_cache_file, 'r', encoding='utf-8') as f:
                 content = f.read()
                 return warning_type in content
     except Exception:
@@ -2723,7 +2735,7 @@ def has_warning_been_shown(warning_type="telescope_unknown"):
 def mark_warning_as_shown(warning_type="telescope_unknown"):
     """Mark a warning as shown using file-based cache"""
     try:
-        with open(_warning_cache_file, 'a') as f:
+        with open(_warning_cache_file, 'a', encoding='utf-8') as f:
             f.write(f"{warning_type}\n")
     except Exception:
         pass
@@ -12334,7 +12346,7 @@ def create_fits_thumbnail_pil(fits_file_path, output_path, size=(300, 300)):
             vmin, vmax = zscale.get_limits(data)
             
             # Normalize data to [0,1] range first
-            data_normalized = (data - vmin) / (vmax - vmin)
+            data_normalized = (data - vmin) / (vmax - vmin) if vmax != vmin else np.zeros_like(data)
             data_normalized = np.clip(data_normalized, 0, 1)
             
             # Apply Asinh stretch for better contrast in faint areas
@@ -12343,7 +12355,7 @@ def create_fits_thumbnail_pil(fits_file_path, output_path, size=(300, 300)):
             
             # EXTREME contrast enhancement for truly black sky background
             p0_1, p99_9 = np.percentile(data_stretched, [0.1, 99.9])
-            data_enhanced = np.clip((data_stretched - p0_1) / (p99_9 - p0_1), 0, 1)
+            data_enhanced = np.clip((data_stretched - p0_1) / (p99_9 - p0_1), 0, 1) if p99_9 != p0_1 else np.zeros_like(data_stretched)
             
             # Apply EXTREME gamma correction for truly black background
             gamma = 0.1
@@ -12434,7 +12446,7 @@ def create_fits_thumbnail_safe(fits_file_path, output_path, size=(300, 300)):
             vmin, vmax = zscale.get_limits(data)
             
             # Normalize data to [0,1] range first
-            data_normalized = (data - vmin) / (vmax - vmin)
+            data_normalized = (data - vmin) / (vmax - vmin) if vmax != vmin else np.zeros_like(data)
             data_normalized = np.clip(data_normalized, 0, 1)
             
             # Apply Asinh stretch for better contrast in faint areas
@@ -12443,7 +12455,7 @@ def create_fits_thumbnail_safe(fits_file_path, output_path, size=(300, 300)):
             
             # EXTREME contrast enhancement for truly black sky background
             p0_1, p99_9 = np.percentile(data_stretched, [0.1, 99.9])
-            data_enhanced = np.clip((data_stretched - p0_1) / (p99_9 - p0_1), 0, 1)
+            data_enhanced = np.clip((data_stretched - p0_1) / (p99_9 - p0_1), 0, 1) if p99_9 != p0_1 else np.zeros_like(data_stretched)
             
             # Apply EXTREME gamma correction for truly black background
             gamma = 0.1
@@ -12534,7 +12546,7 @@ def create_fits_thumbnail(fits_file_path, output_path, size=(300, 300)):
             vmin, vmax = zscale.get_limits(data)
             
             # Normalize data to [0,1] range first
-            data_normalized = (data - vmin) / (vmax - vmin)
+            data_normalized = (data - vmin) / (vmax - vmin) if vmax != vmin else np.zeros_like(data)
             data_normalized = np.clip(data_normalized, 0, 1)
             
             # Apply Asinh stretch for better contrast in faint areas
@@ -12544,7 +12556,7 @@ def create_fits_thumbnail(fits_file_path, output_path, size=(300, 300)):
             # EXTREME contrast enhancement for truly black sky background
             # Use very extreme percentiles to push sky to absolute black
             p0_1, p99_9 = np.percentile(data_stretched, [0.1, 99.9])
-            data_enhanced = np.clip((data_stretched - p0_1) / (p99_9 - p0_1), 0, 1)
+            data_enhanced = np.clip((data_stretched - p0_1) / (p99_9 - p0_1), 0, 1) if p99_9 != p0_1 else np.zeros_like(data_stretched)
             
             # Apply EXTREME gamma correction for truly black background
             gamma = 0.1  # EXTREMELY low gamma for truly black sky

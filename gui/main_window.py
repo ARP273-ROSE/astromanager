@@ -392,7 +392,9 @@ class AstroManagerWindow(QMainWindow):
         QMessageBox.warning(self, title, message)
 
     def _on_busy_changed(self, busy):
-        self.tab_widget.setEnabled(not busy)
+        # Only disable the tab bar (prevent switching), not the tab content
+        # so that Stop buttons inside tabs remain clickable
+        self.tab_widget.tabBar().setEnabled(not busy)
 
     def _on_analysis_completed(self, results):
         """Auto-store analysis results in observation database + refresh history."""

@@ -1068,11 +1068,20 @@ def _write_xisf_header(filepath: str, changes: Dict[str, Any]) -> bool:
         new_xml_bytes = new_xml_bytes.ljust(new_header_len, b'\x00')
         
         offset_delta = new_header_len - header_len
-        
+
         # Adjust attachment offsets in the XML
         xml_adjusted = _adjust_xisf_offsets(new_xml_bytes.decode('utf-8', errors='replace'),
                                              offset_delta)
-        new_xml_bytes = xml_adjusted.encode('utf-8').ljust(new_header_len, b'\x00')
+        adjusted_bytes = xml_adjusted.encode('utf-8')
+        # Re-check: adjusted offsets may have more digits, causing XML to grow
+        if len(adjusted_bytes) > new_header_len:
+            new_header_len = ((len(adjusted_bytes) + 4095) // 4096) * 4096
+            # Re-adjust with corrected delta
+            offset_delta = new_header_len - header_len
+            xml_adjusted = _adjust_xisf_offsets(new_xml_bytes.decode('utf-8', errors='replace'),
+                                                 offset_delta)
+            adjusted_bytes = xml_adjusted.encode('utf-8')
+        new_xml_bytes = adjusted_bytes.ljust(new_header_len, b'\x00')
         
         with open(filepath, 'wb') as f:
             f.write(b'XISF0100')

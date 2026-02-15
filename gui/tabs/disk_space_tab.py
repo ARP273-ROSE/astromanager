@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (
     QProgressBar, QMessageBox, QAbstractItemView, QComboBox,
     QCheckBox, QTabWidget
 )
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QFont
 
 from core.workers import UnifiedWorker, WorkerJob, JobType
@@ -28,6 +28,10 @@ from core.config import get_config
 
 
 class DiskSpaceTab(QWidget):
+    # Thread-safe signals for background operations
+    _preview_result_signal = pyqtSignal(str)
+    _organize_progress_signal = pyqtSignal(int)
+    _organize_done_signal = pyqtSignal(int, int, str)
     """Disk Space tab - Storage analysis and optimization"""
 
     def __init__(self, parent=None):
@@ -43,6 +47,11 @@ class DiskSpaceTab(QWidget):
                 self.lang = 'en'
         self.worker = None
         self.storage_stats = None
+        # Connect thread-safe signals
+        self._preview_result_signal.connect(self._show_preview_result)
+        self._organize_progress_signal.connect(lambda pct: self.org_progress.setValue(pct))
+        self._organize_done_signal.connect(
+            lambda m, e, msg: self._on_organize_done(success=m, errors=e, error_msg=msg if msg else None))
         self._init_ui()
 
     def _tr(self, en, fr):
@@ -586,9 +595,9 @@ class DiskSpaceTab(QWidget):
 
                 result_text = '\n'.join(lines)
                 self._org_plan = plan
-                QTimer.singleShot(0, lambda: self._show_preview_result(result_text))
+                self._preview_result_signal.emit(result_text)
             except Exception as e:
-                QTimer.singleShot(0, lambda: self._show_preview_result(f"Error: {e}"))
+                self._preview_result_signal.emit(f"Error: {e}")
 
         self._org_plan = []
         threading.Thread(target=_do_preview, daemon=True).start()
@@ -629,14 +638,14 @@ class DiskSpaceTab(QWidget):
 
                 def on_progress(current, total, msg):
                     pct = int(current * 100 / max(total, 1))
-                    QTimer.singleShot(0, lambda: self.org_progress.setValue(pct))
+                    self._organize_progress_signal.emit(pct)
 
                 result = execute_organization(plan, copy_mode=copy_mode, progress_callback=on_progress)
                 moved = result.get('moved', 0)
                 errors = result.get('errors', 0)
-                QTimer.singleShot(0, lambda m=moved, e=errors: self._on_organize_done(success=m, errors=e))
+                self._organize_done_signal.emit(moved, errors, '')
             except Exception as e:
-                QTimer.singleShot(0, lambda msg=str(e): self._on_organize_done(error_msg=msg))
+                self._organize_done_signal.emit(0, 0, str(e))
 
         threading.Thread(target=_do_organize, daemon=True).start()
 
