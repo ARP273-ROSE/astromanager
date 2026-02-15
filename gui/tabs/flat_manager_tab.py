@@ -104,6 +104,7 @@ class FlatManagerTab(QWidget):
         self.analysis_data = None
         self._scan_worker = None
         self._init_ui()
+        self._restore_options()
         # Listen for analysis completion to enable target linking
         signals.analysis_completed.connect(self._on_analysis_completed)
 
@@ -201,6 +202,22 @@ class FlatManagerTab(QWidget):
         btn_layout.addWidget(self.export_btn)
         layout.addLayout(btn_layout)
 
+    # ==================================================================
+    # Persistence
+    # ==================================================================
+
+    def _restore_options(self):
+        """Restore saved options from config."""
+        folder = self.config.get('flat_manager.last_folder', '')
+        if folder:
+            self.folder_input.setText(folder)
+
+    def _save_options(self):
+        """Save current options to config for next session."""
+        self.config.set('flat_manager.last_folder',
+                        self.folder_input.text().strip())
+        self.config.save_config()
+
     def _browse_folder(self):
         folder = QFileDialog.getExistingDirectory(self, self._tr("Select Flats Folder", "Sélectionner Dossier Flats"))
         if folder:
@@ -208,6 +225,7 @@ class FlatManagerTab(QWidget):
 
     def _scan_flats(self):
         """Scan folder for flat frames (non-blocking, runs in worker thread)"""
+        self._save_options()
         folder = self.folder_input.text().strip()
         if not folder or not os.path.isdir(folder):
             return

@@ -53,6 +53,7 @@ class HeaderEditorTab(QWidget):
         self.loaded_files = []
         self.headers_data = {}
         self._init_ui()
+        self._restore_options()
 
     def _tr(self, en, fr):
         return fr if self.lang == 'fr' else en
@@ -267,6 +268,22 @@ class HeaderEditorTab(QWidget):
                 self._tr("No matching FITS header tokens found in loaded columns.",
                          "Aucun token de header FITS correspondant trouvé dans les colonnes chargées."))
 
+    # ==================================================================
+    # Persistence
+    # ==================================================================
+
+    def _restore_options(self):
+        """Restore saved options from config."""
+        folder = self.config.get('header_editor.last_folder', '')
+        if folder:
+            self.folder_input.setText(folder)
+
+    def _save_options(self):
+        """Save current options to config for next session."""
+        self.config.set('header_editor.last_folder',
+                        self.folder_input.text().strip())
+        self.config.save_config()
+
     def _browse_folder(self):
         folder = QFileDialog.getExistingDirectory(self, self._tr("Select Folder", "Sélectionner Dossier"))
         if folder:
@@ -274,6 +291,7 @@ class HeaderEditorTab(QWidget):
 
     def _load_headers(self):
         """Load headers from files in the selected folder"""
+        self._save_options()
         folder = self.folder_input.text().strip()
         if not folder or not os.path.isdir(folder):
             return
