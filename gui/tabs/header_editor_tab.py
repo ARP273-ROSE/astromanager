@@ -227,7 +227,7 @@ class HeaderEditorTab(QWidget):
 
     def _build_pattern_from_headers(self):
         """Build a filename pattern from the currently loaded header columns"""
-        if self.table.columnCount() == 0:
+        if self.table.rowCount() == 0:
             QMessageBox.information(self, self._tr("Pattern", "Pattern"),
                 self._tr("Load files first to build pattern from headers.",
                          "Chargez d'abord des fichiers pour construire le pattern."))
@@ -247,13 +247,13 @@ class HeaderEditorTab(QWidget):
             'GAIN': '$GAIN$', 'OFFSET': '$OFFSET$', 'BAYOFFST': '$OFFSET$',
         }
 
-        # Get column headers from the table
+        # Get FITS keywords from table rows (column 0 = field name)
         tokens = []
         seen = set()
-        for col in range(self.table.columnCount()):
-            header_key = self.table.horizontalHeaderItem(col)
-            if header_key:
-                key = header_key.text().upper().strip()
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, 0)
+            if item:
+                key = item.text().upper().strip()
                 token = header_to_token.get(key)
                 if token and token not in seen:
                     tokens.append(token)

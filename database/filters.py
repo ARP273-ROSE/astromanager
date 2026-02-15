@@ -2442,9 +2442,9 @@ def normalize_filter_name(raw_name: str) -> str:
         if key.upper() == name_upper:
             return key
 
-    # Partial matching for branded filters
+    # Partial matching for branded filters (skip short keys to avoid false matches)
     for alias_key, canonical in FILTER_ALIASES.items():
-        if alias_key in name_upper:
+        if len(alias_key) >= 3 and alias_key in name_upper:
             return canonical
 
     return name

@@ -17,7 +17,7 @@ from PyQt6.QtWidgets import (
     QHeaderView, QTextEdit, QTabWidget, QAbstractItemView,
     QMessageBox, QSpinBox
 )
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QFont
 
 from core.signals import signals
@@ -27,6 +27,12 @@ from core.database import get_db
 
 class TargetTrackingTab(QWidget):
     """Target Tracking tab - Historical observation data per target"""
+
+    # Thread-safe signals for background operations
+    _simbad_result_signal = pyqtSignal(object)
+    _simbad_error_signal = pyqtSignal(str)
+    _forecast_result_signal = pyqtSignal(object, object)
+    _forecast_error_signal = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -317,6 +323,11 @@ class TargetTrackingTab(QWidget):
         """Connect to global signal bus"""
         signals.analysis_completed.connect(self._on_analysis_completed)
         signals.targets_refreshed.connect(self._load_targets)
+        # Thread-safe callbacks for background operations
+        self._simbad_result_signal.connect(self._on_simbad_result)
+        self._simbad_error_signal.connect(self._on_simbad_error)
+        self._forecast_result_signal.connect(self._display_forecast)
+        self._forecast_error_signal.connect(self._on_forecast_error)
 
     def _load_targets(self):
         """Load target list from database"""
@@ -617,20 +628,20 @@ class TargetTrackingTab(QWidget):
             try:
                 import fits_analyser_gui as fag
                 if not getattr(fag, 'SIMBAD_AVAILABLE', False):
-                    QTimer.singleShot(0, lambda: self._on_simbad_error(
+                    self._simbad_error_signal.emit(
                         self._tr("SIMBAD not available (install astroquery)",
-                                 "SIMBAD non disponible (installer astroquery)")))
+                                 "SIMBAD non disponible (installer astroquery)"))
                     return
 
                 main_id, info = fag._query_simbad_single(target_name)
                 if main_id and info:
-                    QTimer.singleShot(0, lambda: self._on_simbad_result(info))
+                    self._simbad_result_signal.emit(info)
                 else:
-                    QTimer.singleShot(0, lambda: self._on_simbad_error(
+                    self._simbad_error_signal.emit(
                         self._tr(f"No SIMBAD match for '{target_name}'",
-                                 f"Aucun résultat SIMBAD pour '{target_name}'")))
+                                 f"Aucun résultat SIMBAD pour '{target_name}'"))
             except Exception as e:
-                QTimer.singleShot(0, lambda: self._on_simbad_error(str(e)))
+                self._simbad_error_signal.emit(str(e))
 
         threading.Thread(target=_do_resolve, daemon=True).start()
 
@@ -707,9 +718,9 @@ class TargetTrackingTab(QWidget):
                                     ra, dec, lat, lon, date_str)
                                 visibility[date_str] = vis
 
-                QTimer.singleShot(0, lambda: self._display_forecast(forecast, visibility))
+                self._forecast_result_signal.emit(forecast, visibility)
             except Exception as e:
-                QTimer.singleShot(0, lambda: self._on_forecast_error(str(e)))
+                self._forecast_error_signal.emit(str(e))
 
         threading.Thread(target=_do_fetch, daemon=True).start()
 
