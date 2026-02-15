@@ -62,6 +62,7 @@ class DiskSpaceTab(QWidget):
             lambda m, e, msg: self._on_organize_done(success=m, errors=e, error_msg=msg if msg else None))
         self._archive_done_signal.connect(self._on_archive_done)
         self._init_ui()
+        self._restore_options()
 
     def _tr(self, en, fr):
         return fr if self.lang == 'fr' else en
@@ -1036,6 +1037,36 @@ class DiskSpaceTab(QWidget):
     # SLOTS / LOGIC
     # =========================================================================
 
+    # ==================================================================
+    # Persistence
+    # ==================================================================
+
+    def _restore_options(self):
+        """Restore saved options from config."""
+        folder = self.config.get('disk_space.last_folder', '')
+        if folder:
+            self.folder_input.setText(folder)
+        org_dest = self.config.get('disk_space.last_org_destination', '')
+        if org_dest:
+            self.org_dest_input.setText(org_dest)
+        copy_mode = self.config.get('disk_space.copy_mode', True)
+        self.org_copy_mode.setChecked(copy_mode)
+        org_preset_idx = self.config.get('disk_space.org_preset_index', 0)
+        if 0 <= org_preset_idx < self.org_preset_combo.count():
+            self.org_preset_combo.setCurrentIndex(org_preset_idx)
+
+    def _save_options(self):
+        """Save current options to config for next session."""
+        self.config.set('disk_space.last_folder',
+                        self.folder_input.text().strip())
+        self.config.set('disk_space.last_org_destination',
+                        self.org_dest_input.text().strip())
+        self.config.set('disk_space.copy_mode',
+                        self.org_copy_mode.isChecked())
+        self.config.set('disk_space.org_preset_index',
+                        self.org_preset_combo.currentIndex())
+        self.config.save_config()
+
     def _browse_folder(self):
         folder = QFileDialog.getExistingDirectory(
             self, self._tr("Select Folder", "Sélectionner Dossier"))
@@ -1044,6 +1075,7 @@ class DiskSpaceTab(QWidget):
 
     def _analyze_storage(self):
         """Analyze disk space usage"""
+        self._save_options()
         folder = self.folder_input.text().strip()
         if not folder or not os.path.isdir(folder):
             QMessageBox.warning(self, self._tr("Warning", "Avertissement"),
@@ -1257,6 +1289,7 @@ class DiskSpaceTab(QWidget):
 
     def _execute_organization(self):
         """Execute the file organization"""
+        self._save_options()
         if not hasattr(self, '_org_plan') or not self._org_plan:
             QMessageBox.information(self, self._tr("Info", "Info"),
                 self._tr("Run a preview first.", "Lancez d'abord un aperçu."))

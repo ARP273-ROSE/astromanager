@@ -50,6 +50,7 @@ class CompressionTab(QWidget):
             except Exception:
                 self.lang = 'en'
         self._init_ui()
+        self._restore_options()
 
     def _tr(self, en, fr):
         return fr if self.lang == 'fr' else en
@@ -311,6 +312,35 @@ class CompressionTab(QWidget):
         layout.addStretch()
         return widget
 
+    # ── Options persistence ──
+
+    def _restore_options(self):
+        """Restore saved options from config."""
+        last_source = self.config.get('compression.last_source_folder', '')
+        if last_source and os.path.isdir(last_source):
+            self.source_input.setText(last_source)
+        last_backup = self.config.get('compression.last_backup_folder', '')
+        if last_backup:
+            self.backup_input.setText(last_backup)
+        # Output format
+        saved_format = self.config.get('compression.last_output_format', 'xisf')
+        for btn in self.format_group.buttons():
+            if btn.property('format_key') == saved_format:
+                btn.setChecked(True)
+                break
+        # Quarantine
+        self.cb_quarantine.setChecked(self.config.get('compression.quarantine_failed', True))
+
+    def _save_options(self):
+        """Save current options to config."""
+        self.config.set('compression.last_source_folder', self.source_input.text().strip())
+        self.config.set('compression.last_backup_folder', self.backup_input.text().strip())
+        self.config.set('compression.last_output_format', self._get_selected_format())
+        self.config.set('compression.default_profile', self._get_selected_profile())
+        self.config.set('compression.verify_integrity', self.cb_verify.isChecked())
+        self.config.set('compression.quarantine_failed', self.cb_quarantine.isChecked())
+        self.config.save_config()
+
     def _browse(self, which):
         folder = QFileDialog.getExistingDirectory(self, self._tr("Select Folder", "Sélectionner Dossier"))
         if folder:
@@ -363,6 +393,8 @@ class CompressionTab(QWidget):
         if not source or not os.path.isdir(source):
             self.console.append(self._tr("❌ Select a valid source folder", "❌ Sélectionnez un dossier source valide"))
             return
+
+        self._save_options()
 
         self.console.clear()
         self.start_btn.setVisible(False)

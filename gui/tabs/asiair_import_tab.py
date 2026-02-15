@@ -67,6 +67,7 @@ class ASIAIRImportTab(QWidget):
             'asiair_import.filter_options', [])
 
         self._init_ui()
+        self._restore_options()
 
     def _tr(self, en, fr):
         return fr if self.lang == 'fr' else en
@@ -578,6 +579,57 @@ class ASIAIRImportTab(QWidget):
     # Actions
     # ==================================================================
 
+    # ==================================================================
+    # Persistence
+    # ==================================================================
+
+    def _restore_options(self):
+        """Restore saved options from config."""
+        src = self.config.get('asiair_import.last_source_folder', '')
+        if src:
+            self.source_input.setText(src)
+        bak = self.config.get('asiair_import.last_backup_folder', '')
+        if bak:
+            self.backup_input.setText(bak)
+        out = self.config.get('asiair_import.last_output_folder', '')
+        if out:
+            self.output_input.setText(out)
+        org_mode = self.config.get('asiair_import.organize_mode', 0)
+        if org_mode == 1:
+            self.radio_organize.setChecked(True)
+        else:
+            self.radio_keep.setChecked(True)
+        filt_mode = self.config.get('asiair_import.filter_mode', 0)
+        if filt_mode == 1:
+            self.radio_timerange.setChecked(True)
+        else:
+            self.radio_single_filter.setChecked(True)
+        time_ref_idx = self.config.get('asiair_import.time_reference_index', 0)
+        if 0 <= time_ref_idx < self.time_ref_combo.count():
+            self.time_ref_combo.setCurrentIndex(time_ref_idx)
+
+    def _save_options(self):
+        """Save current options to config for next session."""
+        self.config.set('asiair_import.last_source_folder',
+                        self.source_input.text().strip())
+        self.config.set('asiair_import.last_backup_folder',
+                        self.backup_input.text().strip())
+        self.config.set('asiair_import.last_output_folder',
+                        self.output_input.text().strip())
+        self.config.set('asiair_import.organize_mode',
+                        1 if self.radio_organize.isChecked() else 0)
+        self.config.set('asiair_import.filter_mode',
+                        1 if self.radio_timerange.isChecked() else 0)
+        self.config.set('asiair_import.time_reference_index',
+                        self.time_ref_combo.currentIndex())
+        self.config.set('asiair_import.verify_integrity',
+                        self.cb_verify.isChecked())
+        self.config.set('asiair_import.write_overrides',
+                        self.cb_overrides.isChecked())
+        profile = self.profile_combo.currentData() or 'zlib_6'
+        self.config.set('asiair_import.default_profile', profile)
+        self.config.save_config()
+
     def _browse(self, which):
         folder = QFileDialog.getExistingDirectory(
             self, self._tr("Select Folder", "Sélectionner Dossier"))
@@ -642,6 +694,7 @@ class ASIAIRImportTab(QWidget):
         self.config.save_config()
 
     def _start_import(self):
+        self._save_options()
         source = self.source_input.text().strip()
         if not source or not os.path.isdir(source):
             self.console.append(self._tr(
