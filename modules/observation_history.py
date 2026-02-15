@@ -136,7 +136,10 @@ class ObservationHistory:
 
             # Basic target info
             c.execute("SELECT * FROM targets WHERE id = ?", (target_id,))
-            target = dict(c.fetchone())
+            row = c.fetchone()
+            if row is None:
+                return {}
+            target = dict(row)
 
             # Per-filter breakdown
             c.execute("""

@@ -198,11 +198,15 @@ class DatabaseManager:
             logger.info("Database initialized successfully")
 
     def backup_database(self) -> Optional[Path]:
-        """Create database backup"""
+        """Create database backup using SQLite backup API (WAL-safe)"""
         try:
-            import shutil
             if self.db_path.exists():
-                shutil.copy2(self.db_path, DB_BACKUP_PATH)
+                import sqlite3 as _sqlite3
+                src = _sqlite3.connect(self.db_path, timeout=30.0)
+                dst = _sqlite3.connect(str(DB_BACKUP_PATH))
+                src.backup(dst)
+                dst.close()
+                src.close()
                 logger.info(f"Database backed up to {DB_BACKUP_PATH}")
                 return DB_BACKUP_PATH
         except Exception as e:
@@ -422,9 +426,14 @@ class DatabaseManager:
 
     def vacuum(self):
         """Optimize database (VACUUM)"""
-        with self.get_connection() as conn:
+        try:
+            # VACUUM cannot run inside a transaction — use a separate autocommit connection
+            conn = sqlite3.connect(self.db_path, isolation_level=None, timeout=30.0)
             conn.execute("VACUUM")
+            conn.close()
             logger.info("Database vacuumed")
+        except Exception as e:
+            logger.error(f"VACUUM failed: {e}")
 
     def get_database_size(self) -> int:
         """Get database size in bytes"""

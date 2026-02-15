@@ -333,7 +333,7 @@ class FlatManager:
             'groups': {k: g.to_dict() for k, g in self.groups.items()}
         }
         
-        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        os.makedirs(os.path.dirname(save_path) or '.', exist_ok=True)
         with open(save_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
     

@@ -401,7 +401,11 @@ class UnifiedWorker(QThread):
                 self._do_flush()
 
         old_stdout = sys.stdout
-        sys.stdout = OutputCapture(self.output_signal)
+        capture = OutputCapture(self.output_signal)
+        # Use thread-local stdout to avoid corrupting other threads
+        import threading as _threading
+        _threading.current_thread()._stdout_capture = capture
+        sys.stdout = capture
 
         try:
             while self.jobs and not self.should_stop:
@@ -469,6 +473,7 @@ class UnifiedWorker(QThread):
             fag.clear_detected_duplicates()
 
         # Propagate language setting to legacy engine
+        lang = 'en'  # default fallback if config fails
         try:
             from core.config import get_config
             config = get_config()
@@ -1244,6 +1249,10 @@ class UnifiedWorker(QThread):
             start_min = sh * 60 + sm
             end_min = eh * 60 + em
 
+            # Skip zero-length ranges (start == end)
+            if start_min == end_min:
+                continue
+
             if end_min > start_min:
                 # Same-day range (e.g. 20:00 → 23:30)
                 if start_min <= obs_minutes < end_min:
@@ -1272,8 +1281,9 @@ class UnifiedWorker(QThread):
         try:
             dt = datetime.fromisoformat(date_obs_str.replace('Z', '+00:00'))
             if dt.tzinfo is not None:
-                # Convert to naive UTC
-                dt = dt.replace(tzinfo=None)
+                # Convert to naive UTC (actual conversion, not just stripping tz)
+                from datetime import timezone
+                dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
         except Exception:
             return 'unknown'
 
@@ -1777,7 +1787,7 @@ class UnifiedWorker(QThread):
                 except Exception as e:
                     print(f"  ❌ Move failed: {os.path.basename(xisf_new)}: {e}")
 
-                if moved % 20 == 0:
+                if moved > 0 and moved % 20 == 0:
                     self.progress_signal.emit(moved, xisf_total,
                         _tr(f"Organizing: {moved}/{xisf_total}",
                              f"Organisation : {moved}/{xisf_total}"))
