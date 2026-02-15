@@ -1106,8 +1106,9 @@ class UnifiedWorker(QThread):
             return {'weather': {}, 'error': 'Module not available'}
 
     def _handle_disk_analysis(self, params: Dict) -> Dict:
-        """Handle disk space analysis job"""
+        """Handle disk space analysis job with enriched file tracking."""
         import os
+        import time as _time
         folder = params.get('folder', '')
 
         print(f"💾 Analyzing disk space in: {folder}")
@@ -1118,7 +1119,20 @@ class UnifiedWorker(QThread):
             'fz_count': 0, 'fz_size': 0,
             'other_count': 0, 'other_size': 0,
             'total_count': 0, 'total_size': 0,
+            # Enriched data for recommendations
+            'fits_files': [],               # [(filepath, size), ...]
+            'xisf_files': [],               # [(filepath, size, codec), ...]
+            'xisf_pixinsight_count': 0,
+            'xisf_pixinsight_size': 0,
+            'xisf_recompressible_files': [], # [(filepath, size, codec), ...] PI excluded
+            'xisf_recompressible_count': 0,
+            'xisf_recompressible_size': 0,
+            'calibration_files': [],         # [(filepath, size, mtime), ...]
         }
+
+        # Calibration directory names (case-insensitive)
+        calibration_dirs = {'dark', 'flat', 'bias', 'calibration', 'darks', 'flats',
+                            'biases', 'offsets', 'offset'}
 
         all_files = []
         for root, _, filenames in os.walk(folder):
@@ -1127,6 +1141,8 @@ class UnifiedWorker(QThread):
                 all_files.append(fp)
 
         total = len(all_files)
+
+        # ── Phase 1: Walk and collect file info ──
         for i, fp in enumerate(all_files):
             if self.should_stop:
                 break
@@ -1142,20 +1158,83 @@ class UnifiedWorker(QThread):
                 if ext.endswith(('.fits', '.fit')):
                     stats['fits_count'] += 1
                     stats['fits_size'] += size
+                    stats['fits_files'].append((fp, size))
                 elif ext.endswith('.xisf'):
                     stats['xisf_count'] += 1
                     stats['xisf_size'] += size
+                    # Read codec from XISF header (lightweight XML-only read)
+                    try:
+                        from modules.compression import read_xisf_compression_codec
+                        codec = read_xisf_compression_codec(fp)
+                    except Exception:
+                        codec = ''
+                    stats['xisf_files'].append((fp, size, codec))
                 elif ext.endswith('.fz'):
                     stats['fz_count'] += 1
                     stats['fz_size'] += size
                 else:
                     stats['other_count'] += 1
                     stats['other_size'] += size
+
+                # Detect calibration files by parent directory name
+                parent_parts = {p.lower() for p in os.path.normpath(fp).split(os.sep)[:-1]}
+                if parent_parts & calibration_dirs:
+                    try:
+                        mtime = os.path.getmtime(fp)
+                    except OSError:
+                        mtime = 0
+                    stats['calibration_files'].append((fp, size, mtime))
+
             except OSError:
                 pass
 
+        if self.should_stop:
+            return stats
+
+        # ── Phase 2: XISF classification (PixInsight exclusion) ──
+        xisf_total = len(stats['xisf_files'])
+        if xisf_total > 0:
+            self.progress_signal.emit(0, xisf_total, "Classification des fichiers XISF...")
+            from modules.compression import is_pixinsight_file_by_name, is_pixinsight_file_by_header
+
+            for idx, (fp, size, codec) in enumerate(stats['xisf_files']):
+                if self.should_stop:
+                    break
+                if idx % 200 == 0:
+                    self.progress_signal.emit(idx, xisf_total, "Classification des fichiers XISF...")
+
+                is_pi = False
+
+                # Pass 1: Check by filename/path (fast, no I/O)
+                if is_pixinsight_file_by_name(fp):
+                    is_pi = True
+                else:
+                    # Pass 2: Check by header (requires reading XISF header)
+                    try:
+                        from modules.compression import XISFReader
+                        reader = XISFReader(fp)
+                        header_dict = reader.read_header_only()
+                        if is_pixinsight_file_by_header(header_dict):
+                            is_pi = True
+                    except Exception:
+                        pass
+
+                if is_pi:
+                    stats['xisf_pixinsight_count'] += 1
+                    stats['xisf_pixinsight_size'] += size
+                else:
+                    # Non-PI file with suboptimal codec → recompressible
+                    if codec in ('none', 'zlib', ''):
+                        stats['xisf_recompressible_files'].append((fp, size, codec))
+                        stats['xisf_recompressible_count'] += 1
+                        stats['xisf_recompressible_size'] += size
+
         print(f"\n✅ Disk analysis complete: {stats['total_count']} files, "
               f"{stats['total_size'] / (1024**3):.1f} GB total")
+        if stats['xisf_pixinsight_count'] > 0:
+            print(f"   🔒 {stats['xisf_pixinsight_count']} PixInsight files detected (excluded from recompression)")
+        if stats['xisf_recompressible_count'] > 0:
+            print(f"   🗜️ {stats['xisf_recompressible_count']} XISF files recompressible (none/zlib → zstd)")
         return stats
 
     # =========================================================================
