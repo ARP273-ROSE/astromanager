@@ -31,6 +31,7 @@ class JobType(Enum):
     FLAT_SCAN = "flat_scan"
     TARGET_UPDATE = "target_update"
     DISK_ANALYSIS = "disk_analysis"
+    ASIAIR_IMPORT = "asiair_import"
 
 
 @dataclass
@@ -436,6 +437,7 @@ class UnifiedWorker(QThread):
             JobType.PLATE_SOLVE: self._handle_plate_solve,
             JobType.WEATHER_FETCH: self._handle_weather_fetch,
             JobType.DISK_ANALYSIS: self._handle_disk_analysis,
+            JobType.ASIAIR_IMPORT: self._handle_asiair_import,
         }
 
         handler = handlers.get(job.job_type)
@@ -1150,6 +1152,655 @@ class UnifiedWorker(QThread):
         print(f"\n✅ Disk analysis complete: {stats['total_count']} files, "
               f"{stats['total_size'] / (1024**3):.1f} GB total")
         return stats
+
+    # =========================================================================
+    # ASIAIR IMPORT
+    # =========================================================================
+
+    @staticmethod
+    def _resolve_filter(date_obs_str: str, filter_mode: str,
+                        filter_single: str, filter_ranges: list,
+                        time_reference: str = 'utc',
+                        site_long: float = 0.0,
+                        timezone_str: str = '') -> str:
+        """Resolve filter name for a file based on its DATE-OBS.
+
+        The user enters time ranges in the reference of their choice.
+        This method converts the file's DATE-OBS (always UTC) into that
+        same reference before comparing.
+
+        Args:
+            date_obs_str: ISO 8601 DATE-OBS string (UTC)
+            filter_mode: "single" or "timerange"
+            filter_single: Filter name for single mode ("" = use header)
+            filter_ranges: List of dicts {"start": "HH:MM", "end": "HH:MM", "filter": "..."}
+            time_reference: How to interpret the user's time ranges:
+                "utc"      — ranges are in UTC (no conversion)
+                "solar"    — ranges are in local solar time (auto from longitude)
+                "timezone" — ranges are in the configured timezone (DST-aware)
+            site_long: Site longitude in degrees (east > 0) for solar mode
+            timezone_str: IANA timezone (e.g. "Europe/Paris") for timezone mode
+
+        Returns:
+            Filter name, or "" to keep header value.
+        """
+        if filter_mode == 'single':
+            return filter_single
+
+        if filter_mode != 'timerange' or not filter_ranges:
+            return ''
+
+        from datetime import datetime, timedelta, timezone
+
+        try:
+            dt_utc = datetime.fromisoformat(date_obs_str.replace('Z', '+00:00'))
+            # Ensure we have a naive-UTC datetime for arithmetic
+            if dt_utc.tzinfo is not None:
+                dt_utc = dt_utc.astimezone(timezone.utc).replace(tzinfo=None)
+        except Exception:
+            return ''
+
+        # ── Convert UTC → local time according to chosen reference ──
+        if time_reference == 'solar' and site_long != 0.0:
+            # Local solar time offset = longitude / 15  hours
+            # East  (+long) → ahead of UTC
+            # West  (-long) → behind UTC
+            offset_hours = site_long / 15.0
+            dt_local = dt_utc + timedelta(hours=offset_hours)
+
+        elif time_reference == 'timezone' and timezone_str:
+            try:
+                # Python 3.9+
+                from zoneinfo import ZoneInfo
+                tz = ZoneInfo(timezone_str)
+            except ImportError:
+                try:
+                    # Fallback for Python 3.8 / missing tzdata
+                    import pytz
+                    tz = pytz.timezone(timezone_str)
+                except Exception:
+                    tz = None
+            if tz is not None:
+                try:
+                    dt_aware = dt_utc.replace(tzinfo=timezone.utc)
+                    dt_local = dt_aware.astimezone(tz).replace(tzinfo=None)
+                except Exception:
+                    dt_local = dt_utc
+            else:
+                dt_local = dt_utc
+        else:
+            # 'utc' or fallback
+            dt_local = dt_utc
+
+        obs_minutes = dt_local.hour * 60 + dt_local.minute + dt_local.second / 60.0
+
+        for r in filter_ranges:
+            try:
+                sh, sm = map(int, r['start'].split(':'))
+                eh, em = map(int, r['end'].split(':'))
+            except (ValueError, KeyError):
+                continue
+
+            start_min = sh * 60 + sm
+            end_min = eh * 60 + em
+
+            if end_min > start_min:
+                # Same-day range (e.g. 20:00 → 23:30)
+                if start_min <= obs_minutes < end_min:
+                    return r.get('filter', '')
+            else:
+                # Crosses midnight (e.g. 23:30 → 03:00)
+                if obs_minutes >= start_min or obs_minutes < end_min:
+                    return r.get('filter', '')
+
+        return ''
+
+    @staticmethod
+    def _compute_astro_night(date_obs_str: str, site_lat: float,
+                             site_long: float) -> str:
+        """Compute the astronomical night key from a DATE-OBS.
+
+        The astronomical night is identified by the calendar date of the
+        *evening*.  We define the boundary at local solar noon:
+        noon_utc = 12:00 − longitude/15 hours.  Everything between noon(J)
+        and noon(J+1) belongs to the night labelled J.
+
+        Returns:
+            Night date string "YYYY-MM-DD" (evening date).
+        """
+        from datetime import datetime, timedelta
+        try:
+            dt = datetime.fromisoformat(date_obs_str.replace('Z', '+00:00'))
+            if dt.tzinfo is not None:
+                # Convert to naive UTC
+                dt = dt.replace(tzinfo=None)
+        except Exception:
+            return 'unknown'
+
+        # Local solar noon in UTC: 12:00 minus longitude offset
+        # Positive longitude = east → noon is earlier in UTC
+        noon_offset_hours = site_long / 15.0
+        noon_hour_utc = 12.0 - noon_offset_hours
+
+        noon_today = dt.replace(hour=0, minute=0, second=0, microsecond=0) + \
+            timedelta(hours=noon_hour_utc)
+
+        if dt < noon_today:
+            # Before today's noon → belongs to previous evening
+            night_date = (dt - timedelta(days=1)).date()
+        else:
+            night_date = dt.date()
+
+        return night_date.isoformat()
+
+    def _handle_asiair_import(self, params: Dict) -> Dict:
+        """Handle ASIAIR import: compress, write overrides, rename, organize."""
+        import os
+        import shutil
+        from pathlib import Path
+        from concurrent.futures import ProcessPoolExecutor, as_completed
+        import multiprocessing
+
+        source_folder = params.get('source_folder', '')
+        backup_folder = params.get('backup_folder', '')
+        organize = params.get('organize', False)
+        output_folder = params.get('output_folder', '')
+        telescope_override = params.get('telescope_override', '')
+        filter_mode = params.get('filter_mode', 'single')
+        filter_single = params.get('filter_single', '')
+        filter_ranges = params.get('filter_ranges', [])
+        time_reference = params.get('time_reference', 'utc')
+        timezone_str = params.get('timezone_str', '')
+        profile = params.get('profile', 'zlib_6')
+        verify_integrity = params.get('verify_integrity', True)
+        write_overrides = params.get('write_overrides', True)
+        rename_pattern = params.get('rename_pattern', '')
+        lang = params.get('lang', 'en')
+        _tr = lambda en, fr: fr if lang == 'fr' else en
+
+        if not rename_pattern:
+            from modules.header_editor import DEFAULT_FILENAME_PATTERN
+            rename_pattern = DEFAULT_FILENAME_PATTERN
+
+        # ==================================================================
+        # Phase 1 — Scan + resolve filters
+        # ==================================================================
+        print(_tr("=" * 60, "=" * 60))
+        print(_tr("🔭 ASIAIR Import — Phase 1: Scanning files...",
+                   "🔭 Import ASIAIR — Phase 1 : Scan des fichiers..."))
+        print(_tr("=" * 60, "=" * 60))
+
+        fits_files = []
+        for root, _, filenames in os.walk(source_folder):
+            for fn in filenames:
+                if fn.lower().endswith(('.fits', '.fit')):
+                    fits_files.append(os.path.join(root, fn))
+
+        total = len(fits_files)
+        if total == 0:
+            print(_tr("No FITS files found.", "Aucun fichier FITS trouvé."))
+            return {'processed': 0, 'errors': 0}
+
+        print(_tr(f"  Found {total} FITS files",
+                   f"  {total} fichiers FITS trouvés"))
+
+        # Log time reference for filter resolution
+        if filter_mode == 'timerange' and filter_ranges:
+            if time_reference == 'solar':
+                print(_tr(
+                    "  ⏱️ Time ranges: LOCAL SOLAR TIME (auto from FITS coordinates)",
+                    "  ⏱️ Plages horaires : HEURE SOLAIRE LOCALE (auto depuis coordonnées FITS)"))
+            elif time_reference == 'timezone':
+                print(_tr(
+                    f"  ⏱️ Time ranges: TIMEZONE {timezone_str} (DST-aware)",
+                    f"  ⏱️ Plages horaires : FUSEAU {timezone_str} (heure d'été gérée)"))
+            else:
+                print(_tr(
+                    "  ⏱️ Time ranges: UTC",
+                    "  ⏱️ Plages horaires : UTC"))
+
+        # Quick header scan for DATE-OBS to resolve filters
+        from astropy.io import fits as astropy_fits
+        file_metadata = {}  # filepath -> {date_obs, filter, telescope, header}
+        for i, fp in enumerate(fits_files):
+            if self.should_stop:
+                return {'processed': 0, 'errors': 0}
+            try:
+                with astropy_fits.open(fp, mode='readonly', memmap=True) as hdul:
+                    hdr = hdul[0].header
+                    date_obs = str(hdr.get('DATE-OBS', ''))
+                    hdr_filter = str(hdr.get('FILTER', ''))
+                    hdr_telescope = str(hdr.get('TELESCOP', ''))
+                    site_lat = float(hdr.get('SITELAT', 0) or 0)
+                    site_long = float(hdr.get('SITELONG', 0) or 0)
+
+                    # Resolve filter (with local time conversion)
+                    resolved_filter = self._resolve_filter(
+                        date_obs, filter_mode, filter_single, filter_ranges,
+                        time_reference=time_reference,
+                        site_long=site_long,
+                        timezone_str=timezone_str)
+                    if not resolved_filter:
+                        resolved_filter = hdr_filter
+
+                    # Resolve telescope
+                    resolved_telescope = telescope_override if telescope_override else hdr_telescope
+
+                    file_metadata[fp] = {
+                        'date_obs': date_obs,
+                        'filter': resolved_filter,
+                        'telescope': resolved_telescope,
+                        'site_lat': site_lat,
+                        'site_long': site_long,
+                    }
+            except Exception as e:
+                print(f"  ⚠️ {os.path.basename(fp)}: {e}")
+                file_metadata[fp] = {
+                    'date_obs': '',
+                    'filter': filter_single or '',
+                    'telescope': telescope_override or '',
+                    'site_lat': 0, 'site_long': 0,
+                }
+
+            if (i + 1) % 50 == 0 or i == total - 1:
+                self.progress_signal.emit(i + 1, total,
+                    _tr(f"Scanning: {i + 1}/{total}",
+                         f"Scan : {i + 1}/{total}"))
+
+        print(_tr(f"  Scan complete: {len(file_metadata)} files analyzed",
+                   f"  Scan terminé : {len(file_metadata)} fichiers analysés"))
+
+        # Display filter distribution
+        filter_counts = {}
+        for meta in file_metadata.values():
+            f = meta['filter'] or 'N/A'
+            filter_counts[f] = filter_counts.get(f, 0) + 1
+        for f, c in sorted(filter_counts.items()):
+            print(f"    {f}: {c} files")
+
+        # ==================================================================
+        # Phase 2 — Compression (FITS → XISF, parallel)
+        # ==================================================================
+        print(_tr(f"\n🗜️ Phase 2: Compressing {total} files → XISF ({profile})...",
+                   f"\n🗜️ Phase 2 : Compression de {total} fichiers → XISF ({profile})..."))
+
+        workers = max(2, min(multiprocessing.cpu_count() - 1, 8))
+
+        tasks = []
+        for fp in fits_files:
+            src_ext = Path(fp).suffix.lower()
+            basename = Path(fp).stem
+            out_dir = os.path.dirname(fp)
+
+            tasks.append({
+                'filepath': fp,
+                'src_ext': src_ext,
+                'basename': basename,
+                'out_dir': out_dir,
+                'profile_name': profile,
+                'output_format': 'xisf',
+                'backup_folder': backup_folder,
+                'source_folder': source_folder,
+                'verify_integrity': verify_integrity,
+            })
+
+        processed = 0
+        errors = 0
+        xisf_files = {}  # original fits path -> resulting xisf path
+
+        with ProcessPoolExecutor(max_workers=workers) as executor:
+            futures = {}
+            for task in tasks:
+                if self.should_stop:
+                    break
+                future = executor.submit(_compress_single_file, task)
+                futures[future] = task['filepath']
+
+            for future in as_completed(futures):
+                if self.should_stop:
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    break
+                filepath = futures[future]
+                try:
+                    result = future.result(timeout=300)
+                    if result.get('success'):
+                        processed += 1
+                        # Map original to xisf path
+                        xisf_path = os.path.splitext(filepath)[0] + '.xisf'
+                        # After backup, the xisf is in the original dir
+                        out_dir = os.path.dirname(filepath)
+                        basename = Path(filepath).stem
+                        expected_xisf = os.path.join(out_dir, basename + '.xisf')
+                        xisf_files[filepath] = expected_xisf
+                        print(f"  ✅ {os.path.basename(filepath)}")
+                    else:
+                        errors += 1
+                        print(f"  ❌ {os.path.basename(filepath)}: {result.get('error', 'Unknown')}")
+                except Exception as e:
+                    errors += 1
+                    print(f"  ❌ {os.path.basename(filepath)}: {e}")
+
+                done = processed + errors
+                pct = int(done * 100 / total) if total else 100
+                self.progress_signal.emit(done, total,
+                    _tr(f"Compression: {done}/{total} ({pct}%)",
+                         f"Compression : {done}/{total} ({pct}%)"))
+
+        print(_tr(f"  Compression: {processed}/{total} OK, {errors} errors",
+                   f"  Compression : {processed}/{total} OK, {errors} erreurs"))
+
+        if self.should_stop:
+            return {'processed': processed, 'errors': errors}
+
+        # ==================================================================
+        # Phase 3 — Post-processing (sequential)
+        # ==================================================================
+        xisf_list = list(xisf_files.values())
+        xisf_total = len(xisf_list)
+
+        if xisf_total == 0:
+            print(_tr("\n⚠️ No XISF files to post-process.",
+                       "\n⚠️ Aucun fichier XISF à post-traiter."))
+            return {'processed': processed, 'errors': errors}
+
+        # --- 3a. Write overrides into XISF headers ---
+        if write_overrides:
+            print(_tr(f"\n✏️ Phase 3a: Writing header overrides...",
+                       f"\n✏️ Phase 3a : Écriture des overrides dans les headers..."))
+
+            from modules.header_editor import write_per_file_changes
+
+            file_changes = {}
+            for orig_fp, xisf_fp in xisf_files.items():
+                if not os.path.exists(xisf_fp):
+                    continue
+                meta = file_metadata.get(orig_fp, {})
+                changes = {}
+                if meta.get('telescope'):
+                    changes['TELESCOP'] = meta['telescope']
+                if meta.get('filter'):
+                    changes['FILTER'] = meta['filter']
+                if changes:
+                    file_changes[xisf_fp] = changes
+
+            if file_changes:
+                def hdr_progress(done_count, total_count):
+                    self.progress_signal.emit(done_count, total_count,
+                        _tr(f"Headers: {done_count}/{total_count}",
+                             f"Headers : {done_count}/{total_count}"))
+
+                results = write_per_file_changes(
+                    file_changes, backup=False,
+                    progress_callback=hdr_progress)
+                hdr_ok = sum(1 for v in results.values() if v)
+                print(_tr(f"  Headers updated: {hdr_ok}/{len(file_changes)}",
+                           f"  Headers mis à jour : {hdr_ok}/{len(file_changes)}"))
+            else:
+                print(_tr("  No overrides to write.", "  Aucun override à écrire."))
+
+        if self.should_stop:
+            return {'processed': processed, 'errors': errors}
+
+        # --- 3b. Rename XISF files using NINA pattern ---
+        print(_tr(f"\n📝 Phase 3b: Renaming files with NINA pattern...",
+                   f"\n📝 Phase 3b : Renommage selon le pattern NINA..."))
+
+        from modules.header_editor import (
+            read_header, get_header_value, build_filename, DEFAULT_FILENAME_PATTERN
+        )
+
+        renamed_files = {}  # xisf_old_path -> xisf_new_path
+
+        # Read headers from XISF files and sort for frame numbering
+        xisf_headers = {}
+        for xisf_fp in xisf_list:
+            if self.should_stop:
+                break
+            if not os.path.exists(xisf_fp):
+                continue
+            try:
+                xisf_headers[xisf_fp] = read_header(xisf_fp)
+            except Exception as e:
+                print(f"  ⚠️ Cannot read header: {os.path.basename(xisf_fp)}: {e}")
+
+        # Sort by DATE-OBS for frame numbering
+        def _get_ts(fp):
+            h = xisf_headers.get(fp, {})
+            d = get_header_value(h, 'DATE-OBS')
+            if d:
+                try:
+                    from datetime import datetime
+                    return datetime.fromisoformat(str(d).replace('Z', '+00:00')).timestamp()
+                except Exception:
+                    pass
+            return 0.0
+
+        sorted_xisf = sorted(xisf_headers.keys(), key=_get_ts)
+
+        # Group by target+filter+telescope for frame numbering
+        groups = {}
+        for fp in sorted_xisf:
+            h = xisf_headers[fp]
+            target = get_header_value(h, 'OBJECT') or 'Unknown'
+            filt = get_header_value(h, 'FILTER') or ''
+            scope = get_header_value(h, 'TELESCOP') or ''
+            imgtype = get_header_value(h, 'IMAGETYP') or ''
+            group_key = f"{target}_{filt}_{scope}_{imgtype}"
+            if group_key not in groups:
+                groups[group_key] = []
+            groups[group_key].append(fp)
+
+        # Build rename map
+        rename_count = 0
+        for group_key, group_files in groups.items():
+            for idx, fp in enumerate(group_files, 1):
+                if self.should_stop:
+                    break
+                h = xisf_headers.get(fp, {})
+                new_name = build_filename(h, rename_pattern,
+                                          frame_number=idx, extension='.xisf')
+                new_path = os.path.join(os.path.dirname(fp), new_name)
+
+                # Avoid collisions
+                if new_path != fp and os.path.exists(new_path):
+                    base, ext2 = os.path.splitext(new_path)
+                    counter = 2
+                    while os.path.exists(f"{base}_{counter}{ext2}"):
+                        counter += 1
+                    new_path = f"{base}_{counter}{ext2}"
+
+                try:
+                    if new_path != fp:
+                        os.makedirs(os.path.dirname(new_path), exist_ok=True)
+                        os.rename(fp, new_path)
+                        rename_count += 1
+                    renamed_files[fp] = new_path
+                except Exception as e:
+                    print(f"  ❌ Rename failed: {os.path.basename(fp)}: {e}")
+                    renamed_files[fp] = fp
+
+        print(_tr(f"  Renamed {rename_count} files",
+                   f"  {rename_count} fichiers renommés"))
+
+        if self.should_stop:
+            return {'processed': processed, 'errors': errors}
+
+        # --- 3c. Organize into directory structure (if requested) ---
+        if organize and output_folder:
+            print(_tr(f"\n📂 Phase 3c: Organizing into directory structure...",
+                       f"\n📂 Phase 3c : Organisation en arborescence..."))
+
+            # Get global site coordinates (from first file or config)
+            global_lat = 0.0
+            global_long = 0.0
+            for meta in file_metadata.values():
+                if meta.get('site_lat') and meta.get('site_long'):
+                    global_lat = meta['site_lat']
+                    global_long = meta['site_long']
+                    break
+
+            if global_lat == 0.0 and global_long == 0.0:
+                try:
+                    from core.config import get_config
+                    cfg = get_config()
+                    global_lat = cfg.get('observatory.latitude', 0)
+                    global_long = cfg.get('observatory.longitude', 0)
+                except Exception:
+                    pass
+
+            # Compute night keys for all files
+            # Map: original fits path -> (night_key, astro_night_date)
+            night_map = {}  # night_key -> set of files
+            for orig_fp, xisf_new in renamed_files.items():
+                meta = file_metadata.get(
+                    # Find original fits path for this xisf
+                    next((k for k, v in xisf_files.items()
+                          if v == orig_fp), ''), {})
+                if not meta:
+                    # Try direct lookup
+                    for fits_fp, xisf_fp in xisf_files.items():
+                        if xisf_fp == orig_fp:
+                            meta = file_metadata.get(fits_fp, {})
+                            break
+
+                date_obs = meta.get('date_obs', '')
+                lat = meta.get('site_lat', global_lat) or global_lat
+                lon = meta.get('site_long', global_long) or global_long
+                night_key = self._compute_astro_night(date_obs, lat, lon)
+
+                if night_key not in night_map:
+                    night_map[night_key] = []
+                night_map[night_key].append((orig_fp, xisf_new))
+
+            # For each file, determine its destination
+            moved = 0
+            for orig_fp, xisf_new in renamed_files.items():
+                if self.should_stop:
+                    break
+                if not os.path.exists(xisf_new):
+                    continue
+
+                # Find original metadata
+                meta = {}
+                for fits_fp, xisf_fp in xisf_files.items():
+                    if xisf_fp == orig_fp:
+                        meta = file_metadata.get(fits_fp, {})
+                        break
+
+                telescope = meta.get('telescope', 'Unknown') or 'Unknown'
+                date_obs = meta.get('date_obs', '')
+                lat = meta.get('site_lat', global_lat) or global_lat
+                lon = meta.get('site_long', global_long) or global_long
+
+                # Read target and image type from the renamed file header
+                try:
+                    h = read_header(xisf_new)
+                    target = get_header_value(h, 'OBJECT') or 'Unknown'
+                    imgtype = get_header_value(h, 'IMAGETYP') or 'LIGHT'
+                    imgtype = imgtype.strip().upper()
+                    if 'LIGHT' in imgtype:
+                        imgtype = 'LIGHT'
+                    elif 'FLAT' in imgtype:
+                        imgtype = 'FLAT'
+                    elif 'DARK' in imgtype:
+                        imgtype = 'DARK'
+                    elif 'BIAS' in imgtype or 'OFFSET' in imgtype:
+                        imgtype = 'BIAS'
+                except Exception:
+                    target = 'Unknown'
+                    imgtype = 'LIGHT'
+
+                night_key = self._compute_astro_night(date_obs, lat, lon)
+
+                # Determine night number (auto-increment)
+                target_dir = os.path.join(output_folder, telescope, target)
+                night_num = 1
+                if os.path.exists(target_dir):
+                    existing_nights = {}
+                    for d in os.listdir(target_dir):
+                        if d.startswith('Nuit_') or d.startswith('Night_'):
+                            try:
+                                n = int(d.split('_')[1])
+                                existing_nights[n] = d
+                            except (ValueError, IndexError):
+                                pass
+                    # Check if this night_key already has a folder
+                    # We store a mapping file to track night_key -> folder
+                    night_mapping_file = os.path.join(target_dir, '.night_mapping')
+                    night_mapping = {}
+                    if os.path.exists(night_mapping_file):
+                        try:
+                            with open(night_mapping_file, 'r') as mf:
+                                for line in mf:
+                                    parts = line.strip().split('=', 1)
+                                    if len(parts) == 2:
+                                        night_mapping[parts[0]] = int(parts[1])
+                        except Exception:
+                            pass
+
+                    if night_key in night_mapping:
+                        night_num = night_mapping[night_key]
+                    else:
+                        night_num = max(existing_nights.keys(), default=0) + 1
+                        night_mapping[night_key] = night_num
+                        os.makedirs(target_dir, exist_ok=True)
+                        try:
+                            with open(night_mapping_file, 'a') as mf:
+                                mf.write(f"{night_key}={night_num}\n")
+                        except Exception:
+                            pass
+                else:
+                    # First night for this target
+                    os.makedirs(target_dir, exist_ok=True)
+                    try:
+                        night_mapping_file = os.path.join(target_dir, '.night_mapping')
+                        with open(night_mapping_file, 'w') as mf:
+                            mf.write(f"{night_key}=1\n")
+                    except Exception:
+                        pass
+
+                night_label = _tr(f"Night_{night_num}", f"Nuit_{night_num}")
+                dest_dir = os.path.join(target_dir, night_label, imgtype)
+                os.makedirs(dest_dir, exist_ok=True)
+
+                dest_path = os.path.join(dest_dir, os.path.basename(xisf_new))
+                if os.path.exists(dest_path):
+                    base, ext = os.path.splitext(dest_path)
+                    counter = 2
+                    while os.path.exists(f"{base}_{counter}{ext}"):
+                        counter += 1
+                    dest_path = f"{base}_{counter}{ext}"
+
+                try:
+                    shutil.move(xisf_new, dest_path)
+                    moved += 1
+                except Exception as e:
+                    print(f"  ❌ Move failed: {os.path.basename(xisf_new)}: {e}")
+
+                if moved % 20 == 0:
+                    self.progress_signal.emit(moved, xisf_total,
+                        _tr(f"Organizing: {moved}/{xisf_total}",
+                             f"Organisation : {moved}/{xisf_total}"))
+
+            print(_tr(f"  Organized {moved} files into directory structure",
+                       f"  {moved} fichiers organisés en arborescence"))
+
+        # ==================================================================
+        # Summary
+        # ==================================================================
+        print(_tr(f"\n{'=' * 60}", f"\n{'=' * 60}"))
+        print(_tr(f"✅ ASIAIR Import complete!",
+                   f"✅ Import ASIAIR terminé !"))
+        print(_tr(f"   Compressed: {processed}/{total}",
+                   f"   Compressés : {processed}/{total}"))
+        print(_tr(f"   Errors: {errors}",
+                   f"   Erreurs : {errors}"))
+        if organize and output_folder:
+            print(_tr(f"   Output: {output_folder}",
+                       f"   Sortie : {output_folder}"))
+        print(_tr(f"{'=' * 60}", f"{'=' * 60}"))
+
+        return {'processed': processed, 'errors': errors, 'total': total}
 
     def stop(self):
         """Stop worker gracefully"""

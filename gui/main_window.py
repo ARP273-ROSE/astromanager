@@ -190,6 +190,7 @@ class AstroManagerWindow(QMainWindow):
         from gui.tabs.disk_space_tab import DiskSpaceTab
         from gui.tabs.history_tab import HistoryTab
         from gui.tabs.database_tab import DatabaseTab
+        from gui.tabs.asiair_import_tab import ASIAIRImportTab
 
         self.analysis_tab = AnalysisTab()
         self.compression_tab = CompressionTab()
@@ -199,11 +200,14 @@ class AstroManagerWindow(QMainWindow):
         self.history_tab = HistoryTab()
         self.database_tab = DatabaseTab()
         self.disk_tab = DiskSpaceTab()
+        self.asiair_tab = ASIAIRImportTab()
 
         self.tab_widget.addTab(self.analysis_tab,
             self._tr("📊 Analysis", "📊 Analyse"))
         self.tab_widget.addTab(self.compression_tab,
             self._tr("🗜️ Compression", "🗜️ Compression"))
+        self.tab_widget.addTab(self.asiair_tab,
+            self._tr("🔭 ASIAIR Import", "🔭 Import ASIAIR"))
         self.tab_widget.addTab(self.header_tab,
             self._tr("✏️ Header Editor", "✏️ Éditeur Headers"))
         self.tab_widget.addTab(self.flat_tab,
@@ -364,9 +368,9 @@ class AstroManagerWindow(QMainWindow):
     # =========================================================================
 
     def _on_tab_changed(self, index):
-        tab_names = ['analysis', 'compression', 'header_editor',
-                     'flat_manager', 'target_tracking', 'history',
-                     'database', 'disk_space']
+        tab_names = ['analysis', 'compression', 'asiair_import',
+                     'header_editor', 'flat_manager', 'target_tracking',
+                     'history', 'database', 'disk_space']
         if 0 <= index < len(tab_names):
             signals.tab_changed.emit(index, tab_names[index])
 
