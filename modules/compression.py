@@ -921,6 +921,122 @@ def recompress_xisf(xisf_path, output_path=None, profile='zlib_6'):
 
 
 # ============================================================================
+# PIXINSIGHT DETECTION & XISF CODEC READING
+# ============================================================================
+
+# PixInsight artifact suffixes (cosmetic correction, denoised, registered, etc.)
+_PI_SUFFIXES = (
+    '_c.xisf', '_d.xisf', '_r.xisf', '_cc.xisf',
+    '_cal.xisf', '_cal.fits',
+    '_drizzle.xisf', '_drizzle.fits',
+    '_ABE.xisf', '_ABE.fits',
+    '_DBE.xisf', '_DBE.fits',
+    '_star.xisf', '_star.fits',
+    '_starless.xisf', '_starless.fits',
+)
+
+# PixInsight artifact prefixes
+_PI_PREFIXES = ('master', 'calibrated', 'registered', 'integrated')
+
+# PixInsight processing directories
+_PI_DIRECTORIES = {'calibrated', 'registered', 'integrated', 'process',
+                   'masters', 'output'}
+
+
+def is_pixinsight_file_by_name(filepath) -> bool:
+    """Check if a file is a PixInsight artifact by its name/path (no I/O).
+
+    Checks:
+    - Filename suffixes (_c.xisf, _d.xisf, _ABE, _DBE, _star, _starless, etc.)
+    - Filename prefixes (master*, calibrated*, registered*, integrated*)
+    - Parent directory names (calibrated/, registered/, integrated/, process/, masters/)
+    """
+    p = Path(filepath)
+    name_lower = p.name.lower()
+
+    # Check suffixes
+    for suffix in _PI_SUFFIXES:
+        if name_lower.endswith(suffix):
+            return True
+
+    # Check prefixes
+    for prefix in _PI_PREFIXES:
+        if name_lower.startswith(prefix):
+            return True
+
+    # Check parent directories
+    parts_lower = {part.lower() for part in p.parts[:-1]}
+    if parts_lower & _PI_DIRECTORIES:
+        return True
+
+    return False
+
+
+def is_pixinsight_file_by_header(header_dict) -> bool:
+    """Check if a file was created by PixInsight based on header keywords (no I/O).
+
+    Args:
+        header_dict: dict of FITS/XISF header keywords (key -> value)
+
+    Returns:
+        True if any of PROGRAM, SOFTWARE, CREATOR, SWCREATE contains
+        'pixinsight' or 'pleiades' (case-insensitive).
+    """
+    check_keys = ('PROGRAM', 'SOFTWARE', 'CREATOR', 'SWCREATE')
+    for key in check_keys:
+        val = header_dict.get(key, '')
+        if isinstance(val, str) and val:
+            val_lower = val.lower()
+            if 'pixinsight' in val_lower or 'pleiades' in val_lower:
+                return True
+    return False
+
+
+def read_xisf_compression_codec(filepath) -> str:
+    """Read the compression codec from an XISF file header (XML only, ~16KB).
+
+    Returns:
+        'zlib', 'zstd', 'lz4', 'lz4_hc', 'none', or '' on error.
+    """
+    try:
+        with open(str(filepath), 'rb') as f:
+            sig = f.read(8)
+            if sig != b'XISF0100':
+                return ''
+            header_length = struct.unpack('<I', f.read(4))[0]
+            f.read(4)  # reserved
+            xml_bytes = f.read(header_length)
+
+        xml_string = xml_bytes.rstrip(b'\x00').decode('utf-8')
+        if xml_string.startswith('<?xml'):
+            xml_string = xml_string[xml_string.index('?>') + 2:].strip()
+
+        root = ET.fromstring(xml_string)
+        ns = {'xisf': 'http://www.pixinsight.com/xisf'}
+        image = root.find('xisf:Image', ns) or root.find('Image')
+        if image is None:
+            return 'none'
+
+        compression = image.get('compression', '')
+        if not compression:
+            return 'none'
+
+        if 'zstd' in compression or 'zstandard' in compression:
+            return 'zstd'
+        elif 'lz4-hc' in compression:
+            return 'lz4_hc'
+        elif 'lz4' in compression:
+            return 'lz4'
+        elif 'zlib' in compression:
+            return 'zlib'
+        else:
+            return 'none'
+
+    except Exception:
+        return ''
+
+
+# ============================================================================
 # BATCH CONVERSION
 # ============================================================================
 
