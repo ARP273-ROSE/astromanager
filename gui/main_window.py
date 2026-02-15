@@ -528,25 +528,46 @@ class AstroManagerWindow(QMainWindow):
         )
 
     def _show_bug_dialog(self):
-        """Show manual bug report dialog"""
-        from PyQt6.QtWidgets import QInputDialog
-        text, ok = QInputDialog.getMultiLineText(self,
-            self._tr("Report Bug", "Signaler Bug"),
-            self._tr("Describe the issue:", "Décrivez le problème:"),
-            ""
+        """Open GitHub Issues with pre-filled system info."""
+        import platform
+        import urllib.parse
+
+        # Collect system info for the issue body
+        sys_info = (
+            f"- **AstroManager:** v{__version__}\n"
+            f"- **OS:** {platform.system()} {platform.version()}\n"
+            f"- **Python:** {platform.python_version()}\n"
+            f"- **Architecture:** {platform.machine()}\n"
         )
-        if ok and text.strip():
-            if self.bug_reporter:
-                report_id = self.bug_reporter.submit_manual_report(text.strip())
-                QMessageBox.information(self,
-                    self._tr("Bug Report", "Rapport de Bug"),
-                    self._tr(f"Report submitted: {report_id}\nThank you for your feedback!",
-                             f"Rapport soumis: {report_id}\nMerci pour votre retour!"))
-            else:
-                QMessageBox.information(self,
-                    self._tr("Bug Report", "Rapport de Bug"),
-                    self._tr("Bug reporting is currently unavailable.",
-                             "Le signalement de bugs est actuellement indisponible."))
+        # Dependency versions
+        for mod_name in ('PyQt6', 'astropy', 'numpy', 'zstandard', 'lz4'):
+            try:
+                mod = __import__(mod_name)
+                ver = getattr(mod, '__version__', '?')
+                sys_info += f"- **{mod_name}:** {ver}\n"
+            except ImportError:
+                sys_info += f"- **{mod_name}:** not installed\n"
+
+        body = (
+            "## Description\n\n"
+            "<!-- Describe the bug / issue clearly -->\n\n\n"
+            "## Steps to Reproduce\n\n"
+            "1. \n2. \n3. \n\n"
+            "## Expected Behavior\n\n\n\n"
+            "## Actual Behavior\n\n\n\n"
+            "## System Info\n\n"
+            f"{sys_info}\n"
+            "## Screenshots / Logs\n\n"
+            "<!-- Paste any relevant screenshots or log output -->\n"
+        )
+
+        params = urllib.parse.urlencode({
+            'title': '[Bug] ',
+            'body': body,
+            'labels': 'bug',
+        })
+        url = f"https://github.com/ARP273-ROSE/astromanager/issues/new?{params}"
+        QDesktopServices.openUrl(QUrl(url))
 
     def _show_system_info(self):
         """Show system information dialog"""
