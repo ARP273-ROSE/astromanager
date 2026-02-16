@@ -16,7 +16,8 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QCheckBox,
     QPushButton, QLabel, QLineEdit, QFileDialog, QSpinBox,
     QComboBox, QTextEdit, QTabWidget, QFrame, QSplitter,
-    QSizePolicy
+    QSizePolicy, QDialog, QDialogButtonBox, QTableWidget,
+    QTableWidgetItem, QHeaderView, QAbstractItemView
 )
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QTextCursor, QFont
@@ -163,6 +164,18 @@ class AnalysisTab(QWidget):
         ))
         proc_layout.addWidget(self.cb_extract_dups)
 
+        self.cb_fix_extensions = QCheckBox(self._tr(
+            "Detect wrong file extensions",
+            "Détecter les mauvaises extensions"
+        ))
+        self.cb_fix_extensions.setToolTip(self._tr(
+            "Detect files whose extension doesn't match their real format "
+            "(e.g. an XISF file renamed to .fits) and offer to rename them after analysis",
+            "Détecter les fichiers dont l'extension ne correspond pas au vrai format "
+            "(ex : un fichier XISF renommé en .fits) et proposer de les renommer après l'analyse"
+        ))
+        proc_layout.addWidget(self.cb_fix_extensions)
+
         self.cb_auto_history = QCheckBox(self._tr("Save to observation history", "Sauvegarder dans l'historique"))
         self.cb_auto_history.setToolTip(self._tr(
             "Automatically save analysis results to the observation history database "
@@ -289,6 +302,7 @@ class AnalysisTab(QWidget):
         self.cb_astrobin.setChecked(self.config.get('analysis.export_astrobin', False))
         self.cb_compress.setChecked(self.config.get('analysis.compress_fits', False))
         self.cb_extract_dups.setChecked(self.config.get('analysis.extract_duplicates', False))
+        self.cb_fix_extensions.setChecked(self.config.get('analysis.detect_wrong_extensions', True))
         self.cb_auto_history.setChecked(self.config.get('analysis.auto_save_history', True))
         self.workers_spin.setValue(self.config.get('system.workers', 0))
 
@@ -313,6 +327,7 @@ class AnalysisTab(QWidget):
         self.config.set('analysis.export_astrobin', self.cb_astrobin.isChecked())
         self.config.set('analysis.compress_fits', self.cb_compress.isChecked())
         self.config.set('analysis.extract_duplicates', self.cb_extract_dups.isChecked())
+        self.config.set('analysis.detect_wrong_extensions', self.cb_fix_extensions.isChecked())
         self.config.set('analysis.auto_save_history', self.cb_auto_history.isChecked())
         self.config.set('analysis.last_folder', self.folder_input.text().strip())
         self.config.set('system.workers', self.workers_spin.value())
@@ -452,6 +467,7 @@ class AnalysisTab(QWidget):
             'export_astrobin': self.cb_astrobin.isChecked(),
             'compress_fits': self.cb_compress.isChecked(),
             'extract_duplicates': self.cb_extract_dups.isChecked(),
+            'detect_wrong_extensions': self.cb_fix_extensions.isChecked(),
             'workers': self.workers_spin.value(),
             'plate_solve': self.cb_plate_solve.isChecked(),
             'weather': self.cb_weather.isChecked(),
@@ -590,8 +606,93 @@ class AnalysisTab(QWidget):
             self.save_history_btn.setVisible(not self.cb_auto_history.isChecked())
 
             signals.analysis_completed.emit(result)
+
+            # Show extension mismatch dialog if any were detected
+            mismatches = result.get('extension_mismatches', [])
+            if mismatches:
+                self._show_extension_fix_dialog(mismatches)
         else:
             self.console.append(f"\n{'='*40}\n{message}")
+
+    def _show_extension_fix_dialog(self, mismatches):
+        """Show a dialog listing files with wrong extensions and offer to rename them."""
+        dlg = QDialog(self)
+        dlg.setWindowTitle(self._tr(
+            f"Wrong File Extensions ({len(mismatches)} file(s))",
+            f"Mauvaises extensions ({len(mismatches)} fichier(s))"
+        ))
+        dlg.setMinimumWidth(700)
+        layout = QVBoxLayout(dlg)
+
+        info_label = QLabel(self._tr(
+            "The following files have an extension that doesn't match their real format.\n"
+            "You can rename them to the correct extension.",
+            "Les fichiers suivants ont une extension qui ne correspond pas à leur vrai format.\n"
+            "Vous pouvez les renommer avec la bonne extension."
+        ))
+        info_label.setWordWrap(True)
+        layout.addWidget(info_label)
+
+        table = QTableWidget(len(mismatches), 4)
+        table.setHorizontalHeaderLabels([
+            self._tr("File", "Fichier"),
+            self._tr("Current Ext.", "Ext. actuelle"),
+            self._tr("True Format", "Vrai format"),
+            self._tr("Suggested Ext.", "Ext. proposée"),
+        ])
+        table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+
+        for row, m in enumerate(mismatches):
+            table.setItem(row, 0, QTableWidgetItem(os.path.basename(m['path'])))
+            table.setItem(row, 1, QTableWidgetItem(m['current_extension']))
+            table.setItem(row, 2, QTableWidgetItem(m['true_format'].upper()))
+            table.setItem(row, 3, QTableWidgetItem(m['suggested_extension']))
+        layout.addWidget(table)
+
+        btn_box = QDialogButtonBox()
+        rename_btn = btn_box.addButton(
+            self._tr("Rename All", "Tout renommer"),
+            QDialogButtonBox.ButtonRole.AcceptRole
+        )
+        ignore_btn = btn_box.addButton(
+            self._tr("Ignore", "Ignorer"),
+            QDialogButtonBox.ButtonRole.RejectRole
+        )
+        layout.addWidget(btn_box)
+
+        def _do_rename():
+            renamed = 0
+            errors = []
+            for m in mismatches:
+                old_path = m['path']
+                # Build new path: replace the current extension with the suggested one
+                base = old_path
+                cur_ext = m['current_extension']
+                if cur_ext and base.lower().endswith(cur_ext.lower()):
+                    base = base[:len(base) - len(cur_ext)]
+                new_path = base + m['suggested_extension']
+                try:
+                    if not os.path.exists(new_path):
+                        os.rename(old_path, new_path)
+                        renamed += 1
+                    else:
+                        errors.append(f"{os.path.basename(old_path)}: target already exists")
+                except OSError as e:
+                    errors.append(f"{os.path.basename(old_path)}: {e}")
+            msg = self._tr(
+                f"Renamed {renamed}/{len(mismatches)} file(s).",
+                f"{renamed}/{len(mismatches)} fichier(s) renommé(s)."
+            )
+            if errors:
+                msg += "\n" + "\n".join(errors)
+            self.console.append(msg)
+            dlg.accept()
+
+        rename_btn.clicked.connect(_do_rename)
+        ignore_btn.clicked.connect(dlg.reject)
+        dlg.exec()
 
     def _build_results_html(self, result):
         """Build enriched HTML results summary"""
