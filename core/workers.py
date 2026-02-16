@@ -467,10 +467,14 @@ class UnifiedWorker(QThread):
         fag.GENERATE_THUMBNAILS = options.get('generate_thumbnails', False)
         fag.ADU_ANALYSIS_ENABLED = False
         fag.FAST_ANALYSIS = True
+        fag.DETECT_WRONG_EXTENSIONS = options.get('detect_wrong_extensions', False)
 
         # Clear stale duplicate data from previous runs
         if hasattr(fag, 'clear_detected_duplicates'):
             fag.clear_detected_duplicates()
+        # Clear any leftover extension mismatches from previous runs
+        if hasattr(fag, '_EXTENSION_MISMATCHES'):
+            fag._EXTENSION_MISMATCHES = []
 
         # Propagate language setting to legacy engine
         lang = 'en'  # default fallback if config fails
@@ -871,10 +875,18 @@ class UnifiedWorker(QThread):
             print(f"✅ Analysis complete! Output: {output_folder}")
             print(f"{'='*60}")
 
+            # Collect extension mismatches detected during analysis
+            extension_mismatches = []
+            if options.get('detect_wrong_extensions', False) and hasattr(fag, 'get_extension_mismatches'):
+                extension_mismatches = fag.get_extension_mismatches()
+                if extension_mismatches:
+                    print(f"\n⚠️  {len(extension_mismatches)} file(s) with wrong extensions detected")
+
             return {
                 'data_by_target': data_by_target,
                 'global_data': global_data,
                 'output_folder': output_folder,
+                'extension_mismatches': extension_mismatches,
             }
 
         finally:

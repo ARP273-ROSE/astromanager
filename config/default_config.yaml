@@ -9,6 +9,7 @@ application:
   version: "1.0.0"
   language: "auto"  # Options: auto, en, fr
   theme: "cosmic_dark"
+  check_updates_on_startup: true  # Check for updates when the application starts
 
 system:
   workers: 0  # 0 = auto-detect based on CPU cores and RAM
@@ -33,6 +34,7 @@ analysis:
   generate_graphs: true  # Generate statistical graphs
   generate_latex: true  # Generate LaTeX/PDF reports
   generate_csv: true  # Export CSV data files
+  detect_wrong_extensions: true  # Detect files with wrong extensions via magic bytes
 
 compression:
   default_profile: "zlib_6"  # Default compression profile for XISF output format
