@@ -521,7 +521,7 @@ class ObservationHistory:
             )
             targets_imported += 1
 
-            # Batch dedup: delete all matching obs in a single connection [PERF]
+            # DELETE + INSERT in a single transaction to prevent duplicates
             if observations:
                 with self.db.get_connection() as conn:
                     c = conn.cursor()
@@ -540,28 +540,26 @@ class ObservationHistory:
                                   obs.get('telescope') or '',
                                   obs.get('camera') or ''))
 
-            for obs in observations:
-                # Re-serialize JSON fields
-                weather_data = obs.get('weather_data')
-                file_paths = obs.get('file_paths')
-
-                self.db.add_observation(
-                    target_id=target_id,
-                    observation_date=obs_date,
-                    filter_name=obs.get('filter'),
-                    exposure_time=obs.get('exposure_time'),
-                    frame_count=obs.get('frame_count'),
-                    setup=obs.get('setup'),
-                    telescope=obs.get('telescope'),
-                    camera=obs.get('camera'),
-                    hfr=obs.get('hfr'),
-                    fwhm=obs.get('fwhm'),
-                    temperature=obs.get('temperature'),
-                    weather_data=weather_data if isinstance(weather_data, dict) else None,
-                    file_paths=file_paths if isinstance(file_paths, list) else None,
-                    notes=obs.get('notes'),
-                )
-                obs_imported += 1
+                    for obs in observations:
+                        weather_data = obs.get('weather_data')
+                        file_paths = obs.get('file_paths')
+                        obs_date = obs.get('observation_date', '')
+                        c.execute("""
+                            INSERT OR REPLACE INTO observations (
+                                target_id, observation_date, filter, exposure_time,
+                                frame_count, setup, telescope, camera, hfr, fwhm,
+                                temperature, weather_data, file_paths, notes
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """, (
+                            target_id, obs_date, obs.get('filter'),
+                            obs.get('exposure_time'), obs.get('frame_count'),
+                            obs.get('setup'), obs.get('telescope'), obs.get('camera'),
+                            obs.get('hfr'), obs.get('fwhm'), obs.get('temperature'),
+                            json.dumps(weather_data) if isinstance(weather_data, dict) else None,
+                            json.dumps(file_paths) if isinstance(file_paths, list) else None,
+                            obs.get('notes'),
+                        ))
+                        obs_imported += 1
 
         logger.info(f"Imported {targets_imported} targets, {obs_imported} observations from {file_path}")
         return targets_imported, obs_imported
@@ -795,6 +793,8 @@ class ObservationHistory:
                         obs_rows.append((obs_date, filter_name, total_exp, frame_count))
 
                 if obs_rows:
+                    # DELETE + INSERT in a single transaction to guarantee
+                    # atomicity and prevent duplicate observations.
                     with self.db.get_connection() as conn:
                         c = conn.cursor()
                         for obs_date, filter_name, total_exp, frame_count in obs_rows:
@@ -809,18 +809,19 @@ class ObservationHistory:
                             """, (target_id, obs_date, filter_name or '',
                                   telescope_str or '', camera_str or ''))
 
-                    for obs_date, filter_name, total_exp, frame_count in obs_rows:
-                        self.db.add_observation(
-                            target_id=target_id,
-                            observation_date=obs_date,
-                            filter_name=filter_name,
-                            exposure_time=total_exp,
-                            frame_count=frame_count,
-                            setup=setup_str,
-                            telescope=telescope_str,
-                            camera=camera_str,
-                        )
-                        obs_stored += 1
+                        # Insert in same transaction
+                        for obs_date, filter_name, total_exp, frame_count in obs_rows:
+                            c.execute("""
+                                INSERT INTO observations (
+                                    target_id, observation_date, filter, exposure_time,
+                                    frame_count, setup, telescope, camera
+                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            """, (target_id, obs_date, filter_name, total_exp,
+                                  frame_count, setup_str, telescope_str, camera_str))
+                            obs_stored += 1
+
+                    # Update target stats after commit
+                    self.db.update_target_stats(target_id)
 
                 targets_stored += 1
             except Exception as e:

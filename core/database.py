@@ -231,6 +231,16 @@ class DatabaseManager:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_weather_date ON weather_cache(observation_date)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_header_path ON header_cache(file_path)")
 
+            # Prevent duplicate observations at the database level.
+            # Uses COALESCE to treat NULL as '' for dedup matching.
+            cursor.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_obs_dedup
+                ON observations(
+                    target_id, observation_date,
+                    COALESCE(filter, ''), COALESCE(telescope, ''), COALESCE(camera, '')
+                )
+            """)
+
             # Set schema version
             cursor.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (1)")
 
@@ -419,7 +429,7 @@ class DatabaseManager:
             cursor = conn.cursor()
 
             cursor.execute("""
-                INSERT INTO observations (
+                INSERT OR REPLACE INTO observations (
                     target_id, observation_date, filter, exposure_time,
                     frame_count, setup, telescope, camera, hfr, fwhm,
                     temperature, weather_data, file_paths, notes

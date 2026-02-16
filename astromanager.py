@@ -40,6 +40,13 @@ import multiprocessing
 from pathlib import Path
 import argparse
 
+# When built as windowed .exe (console=False), sys.stdout/stderr are None.
+# Redirect to devnull to prevent 'NoneType' has no attribute 'buffer' crashes.
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, 'w', encoding='utf-8', errors='replace')
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, 'w', encoding='utf-8', errors='replace')
+
 # OBLIGATOIRE: freeze_support() must be called before any ProcessPoolExecutor
 # usage when packaged as a Windows .exe with PyInstaller.
 multiprocessing.freeze_support()
