@@ -12,6 +12,7 @@ Replaces monolithic AnalysisWorker with plugin-based handlers.
 import sys
 import traceback
 import logging
+import threading
 from enum import Enum
 from dataclasses import dataclass, field
 from typing import Callable, Any, Optional, Dict, List
@@ -19,6 +20,22 @@ from typing import Callable, Any, Optional, Dict, List
 from PyQt6.QtCore import QThread, pyqtSignal
 
 logger = logging.getLogger(__name__)
+
+# Thread-local storage for output capture
+_thread_local = threading.local()
+
+
+def worker_print(*args, **kwargs):
+    """Print function that routes to thread-local OutputCapture if available,
+    otherwise falls back to the real sys.stdout."""
+    capture = getattr(_thread_local, 'output_capture', None)
+    if capture is not None:
+        text = ' '.join(str(a) for a in args)
+        end = kwargs.get('end', '\n')
+        capture.write(text + end)
+    else:
+        _original_stdout = sys.__stdout__ or sys.stdout
+        print(*args, file=_original_stdout, **kwargs)
 
 
 class JobType(Enum):
@@ -67,8 +84,11 @@ def _verify_output_file(output_path: str) -> Dict:
         else:
             return {'success': True}  # Unknown format, skip verification
         return {'success': True}
+    except (MemoryError, PermissionError, OSError) as e:
+        # Transient errors: don't delete the file, it may be valid
+        return {'success': False, 'error': f'Verification error (file preserved): {e}'}
     except Exception as e:
-        # Delete corrupt output file
+        # Likely corruption: remove invalid output
         try:
             if os.path.exists(output_path):
                 os.remove(output_path)
@@ -152,6 +172,8 @@ def _compress_single_file(task: Dict) -> Dict:
             return {'success': False, 'file': filepath, 'error': f'Unknown output format: {output_format}'}
 
         # Check result from conversion function
+        if result is None:
+            result = {'status': 'error', 'message': 'Conversion returned None'}
         if result.get('status') != 'success':
             return {'success': False, 'file': filepath, 'error': result.get('message', 'Conversion failed')}
 
@@ -168,6 +190,11 @@ def _compress_single_file(task: Dict) -> Dict:
             if os.path.abspath(filepath) != os.path.abspath(actual_output):
                 rel_path = os.path.relpath(filepath, source_folder)
                 backup_path = os.path.join(backup_folder, rel_path)
+                # Validate against path traversal
+                resolved_backup = os.path.realpath(backup_path)
+                resolved_root = os.path.realpath(backup_folder)
+                if not resolved_backup.startswith(resolved_root + os.sep) and resolved_backup != resolved_root:
+                    return {'success': False, 'file': filepath, 'error': 'Path traversal detected in backup path'}
                 os.makedirs(os.path.dirname(backup_path), exist_ok=True)
                 shutil.move(filepath, backup_path)
 
@@ -400,12 +427,9 @@ class UnifiedWorker(QThread):
             def flush(self):
                 self._do_flush()
 
-        old_stdout = sys.stdout
         capture = OutputCapture(self.output_signal)
-        # Use thread-local stdout to avoid corrupting other threads
-        import threading as _threading
-        _threading.current_thread()._stdout_capture = capture
-        sys.stdout = capture
+        # Use thread-local capture to avoid corrupting other threads' stdout
+        _thread_local.output_capture = capture
 
         try:
             while self.jobs and not self.should_stop:
@@ -428,8 +452,8 @@ class UnifiedWorker(QThread):
                 self.finished_signal.emit(False, "Stopped by user", None)
 
         finally:
-            sys.stdout.flush()
-            sys.stdout = old_stdout
+            capture.flush()
+            _thread_local.output_capture = None
 
     def _dispatch_job(self, job: WorkerJob) -> Any:
         """Dispatch job to appropriate handler"""
@@ -484,7 +508,10 @@ class UnifiedWorker(QThread):
             lang = config.get('application.language', 'auto')
             if lang == 'auto':
                 import locale
-                loc = locale.getdefaultlocale()[0]
+                try:
+                    loc = locale.getlocale()[0]
+                except (ValueError, AttributeError):
+                    loc = None
                 lang = 'fr' if loc and loc.startswith('fr') else 'en'
             if hasattr(fag, 'SYSTEM_LANGUAGE'):
                 fag.SYSTEM_LANGUAGE = lang
@@ -1713,7 +1740,14 @@ class UnifiedWorker(QThread):
                 try:
                     if new_path != fp:
                         os.makedirs(os.path.dirname(new_path), exist_ok=True)
-                        os.rename(fp, new_path)
+                        try:
+                            os.rename(fp, new_path)
+                        except OSError:
+                            # Race condition: another process created the file, add timestamp suffix
+                            import time as _time_mod
+                            base_r, ext2_r = os.path.splitext(new_path)
+                            new_path = f"{base_r}_{int(_time_mod.time())}{ext2_r}"
+                            os.rename(fp, new_path)
                         rename_count += 1
                     renamed_files[fp] = new_path
                 except Exception as e:
@@ -1873,7 +1907,14 @@ class UnifiedWorker(QThread):
                     dest_path = f"{base}_{counter}{ext}"
 
                 try:
-                    shutil.move(xisf_new, dest_path)
+                    try:
+                        shutil.move(xisf_new, dest_path)
+                    except OSError:
+                        # Race condition: another process created the file, add timestamp suffix
+                        import time as _time_mod
+                        base_r, ext_r = os.path.splitext(dest_path)
+                        dest_path = f"{base_r}_{int(_time_mod.time())}{ext_r}"
+                        shutil.move(xisf_new, dest_path)
                     moved += 1
                 except Exception as e:
                     print(f"  ❌ Move failed: {os.path.basename(xisf_new)}: {e}")

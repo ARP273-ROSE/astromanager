@@ -29,6 +29,7 @@ from core.workers import UnifiedWorker, WorkerJob, JobType
 from core.signals import signals
 from gui.theme import get_mono_font
 from core.config import get_config
+from core.i18n import get_lang
 
 
 class DiskSpaceTab(QWidget):
@@ -43,14 +44,7 @@ class DiskSpaceTab(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.config = get_config()
-        self.lang = self.config.get('application.language', 'auto')
-        if self.lang == 'auto':
-            import locale
-            try:
-                loc = locale.getdefaultlocale()[0]
-                self.lang = 'fr' if loc and loc.lower().startswith('fr') else 'en'
-            except Exception:
-                self.lang = 'en'
+        self.lang = get_lang()
         self.worker = None
         self.storage_stats = None
         self._pending_actions = []
@@ -853,6 +847,8 @@ class DiskSpaceTab(QWidget):
             for i, (fp, _size, _mtime) in enumerate(files):
                 try:
                     rel = os.path.relpath(fp, source_folder)
+                    if rel.startswith('..') or os.path.isabs(rel):
+                        continue  # Skip files outside source folder
                     dst = os.path.join(dest_path, rel)
                     os.makedirs(os.path.dirname(dst), exist_ok=True)
                     shutil.move(fp, dst)
@@ -1102,6 +1098,7 @@ class DiskSpaceTab(QWidget):
     def _on_finished(self, success, message, result):
         self.analyze_btn.setEnabled(True)
         self.progress_bar.setVisible(False)
+        self.worker = None
 
         if success and result:
             self.storage_stats = result

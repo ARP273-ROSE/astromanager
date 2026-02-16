@@ -152,6 +152,18 @@ _FILTER_GREEK = {
 }
 
 
+_FILTER_PATTERNS = None
+
+def _get_filter_patterns():
+    """Return cached compiled regex patterns for filter name prettification."""
+    global _FILTER_PATTERNS
+    if _FILTER_PATTERNS is None:
+        import re
+        _FILTER_PATTERNS = [(re.compile(re.escape(key), re.IGNORECASE), val)
+                            for key, val in sorted(_FILTER_GREEK.items(), key=lambda x: len(x[0]), reverse=True)]
+    return _FILTER_PATTERNS
+
+
 def prettify_filter_name(name: str) -> str:
     """Convert a filter code to a human-friendly Unicode string.
 
@@ -178,12 +190,10 @@ def prettify_filter_name(name: str) -> str:
         return hit
 
     # Partial replacement: replace known tokens inside longer names
-    import re
     result = name
-    for key in sorted(_FILTER_GREEK, key=len, reverse=True):
-        pattern = re.compile(re.escape(key), re.IGNORECASE)
+    for pattern, replacement in _get_filter_patterns():
         if pattern.search(result):
-            result = pattern.sub(_FILTER_GREEK[key], result)
+            result = pattern.sub(replacement, result)
             break
 
     return result

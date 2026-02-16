@@ -27,6 +27,9 @@ psutil>=5.9
 # Configuration (recommended)
 PyYAML>=6.0
 
+# XML security (recommended - protects against XXE/billion laughs attacks)
+defusedxml>=0.7
+
 # SIMBAD target resolution (optional - enables astronomical catalog queries)
 astroquery>=0.4
 

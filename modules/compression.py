@@ -18,8 +18,17 @@ import struct
 import zlib
 import hashlib
 import numpy as np
+import logging
+import functools
 import xml.etree.ElementTree as ET
-from datetime import datetime
+
+try:
+    from defusedxml import ElementTree as SafeET
+except ImportError:
+    import warnings
+    warnings.warn("defusedxml not installed — XML parsing is NOT protected against XXE attacks", stacklevel=2)
+    from xml.etree import ElementTree as SafeET
+from datetime import datetime, timezone
 from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
@@ -47,6 +56,11 @@ try:
 except ImportError:
     HAS_XISF_LIB = False
 
+
+logger = logging.getLogger(__name__)
+
+MAX_DECOMPRESSED_SIZE = 16 * 1024 * 1024 * 1024  # 16 GB
+MAX_HEADER_SIZE = 100 * 1024 * 1024  # 100 MB
 
 # ============================================================================
 # COMPRESSION PROFILES - User-selectable with explanations
@@ -193,6 +207,7 @@ def byte_shuffle(data: bytes, item_size: int) -> bytes:
     arr = np.frombuffer(data, dtype=np.uint8)
     n_items = len(arr) // item_size
     if n_items * item_size != len(arr):
+        logger.warning(f"byte_shuffle: data length {len(arr)} not aligned to item_size {item_size}")
         return data
     reshaped = arr[:n_items * item_size].reshape(n_items, item_size)
     shuffled = reshaped.T.ravel()
@@ -220,6 +235,16 @@ def byte_unshuffle(data: bytes, item_size: int) -> bytes:
 # COMPRESS / DECOMPRESS FUNCTIONS
 # ============================================================================
 
+_zstd_compressor_cache = {}
+
+
+def _get_zstd_compressor(level: int):
+    """Get or create a cached ZstdCompressor for the given level."""
+    if level not in _zstd_compressor_cache:
+        _zstd_compressor_cache[level] = zstd.ZstdCompressor(level=level)
+    return _zstd_compressor_cache[level]
+
+
 def compress_data(data: bytes, codec: str, level: int = 6,
                   shuffle: bool = True, item_size: int = 2) -> bytes:
     """Compress raw bytes with the specified codec."""
@@ -232,7 +257,7 @@ def compress_data(data: bytes, codec: str, level: int = 6,
     elif codec in ('zstd',):
         if not HAS_ZSTD:
             raise RuntimeError("zstandard package not installed (pip install zstandard)")
-        cctx = zstd.ZstdCompressor(level=level)
+        cctx = _get_zstd_compressor(level)
         return cctx.compress(work)
     elif codec == 'lz4':
         if not HAS_LZ4:
@@ -252,8 +277,14 @@ def compress_data(data: bytes, codec: str, level: int = 6,
 def decompress_data(data: bytes, codec: str, original_size: int,
                     shuffle: bool = False, item_size: int = 2) -> bytes:
     """Decompress bytes with the specified codec."""
+    if original_size > MAX_DECOMPRESSED_SIZE:
+        raise ValueError(f"Decompressed size {original_size} exceeds maximum allowed {MAX_DECOMPRESSED_SIZE}")
+
     if codec == 'zlib':
-        raw = zlib.decompress(data)
+        dobj = zlib.decompressobj()
+        raw = dobj.decompress(data, original_size + 1)
+        if dobj.unconsumed_tail or dobj.unused_data:
+            raise ValueError(f"Zlib decompressed data exceeds declared original_size {original_size}")
     elif codec in ('zstd',):
         if not HAS_ZSTD:
             raise RuntimeError("zstandard package not installed")
@@ -267,6 +298,9 @@ def decompress_data(data: bytes, codec: str, original_size: int,
         raw = data
     else:
         raise ValueError(f"Unknown codec: {codec}")
+
+    if len(raw) != original_size:
+        raise ValueError(f"Decompressed size mismatch: expected {original_size}, got {len(raw)}")
 
     if shuffle and item_size > 1:
         raw = byte_unshuffle(raw, item_size)
@@ -301,6 +335,7 @@ class XISFWriter:
 
         compressed = compress_data(image_bytes, self.codec, self.level,
                                    self.shuffle, item_size)
+        del image_bytes
         compressed_size = len(compressed)
 
         def _aligned(pos, align=self._BLOCK_ALIGNMENT):
@@ -416,7 +451,7 @@ class XISFWriter:
         # Metadata
         parts.append('  <Metadata>')
         parts.append(f'    <Property id="XISF:CreationTime" type="String" '
-                     f'value="{datetime.utcnow().isoformat()}"/>')
+                     f'value="{datetime.now(timezone.utc).isoformat()}"/>')
         parts.append('    <Property id="XISF:CreatorApplication" type="String" '
                      'value="AstroFileManager"/>')
         codec_desc = f"{self.codec} level={self.level}" if self.codec != 'none' else 'none'
@@ -460,6 +495,8 @@ class XISFReader:
                 if sig != b'XISF0100':
                     return {}
                 header_length = struct.unpack('<I', f.read(4))[0]
+                if header_length > MAX_HEADER_SIZE:
+                    raise ValueError(f"XISF header length {header_length} exceeds maximum {MAX_HEADER_SIZE}")
                 f.read(4)  # reserved
                 xml_bytes = f.read(header_length)
 
@@ -467,7 +504,7 @@ class XISFReader:
             if xml_string.startswith('<?xml'):
                 xml_string = xml_string[xml_string.index('?>') + 2:].strip()
 
-            root = ET.fromstring(xml_string)
+            root = SafeET.fromstring(xml_string)
             ns = {'xisf': 'http://www.pixinsight.com/xisf'}
             image = root.find('xisf:Image', ns) or root.find('Image')
             if image is None:
@@ -516,6 +553,8 @@ class XISFReader:
                 raise ValueError("Not a valid XISF file")
 
             header_length = struct.unpack('<I', f.read(4))[0]
+            if header_length > MAX_HEADER_SIZE:
+                raise ValueError(f"XISF header length {header_length} exceeds maximum {MAX_HEADER_SIZE}")
             f.read(4)  # reserved
 
             xml_bytes = f.read(header_length)
@@ -523,7 +562,7 @@ class XISFReader:
             if xml_string.startswith('<?xml'):
                 xml_string = xml_string[xml_string.index('?>') + 2:].strip()
 
-            root = ET.fromstring(xml_string)
+            root = SafeET.fromstring(xml_string)
             ns = {'xisf': 'http://www.pixinsight.com/xisf'}
             image = root.find('xisf:Image', ns) or root.find('Image')
             if image is None:
@@ -643,24 +682,26 @@ def fits_to_xisf(fits_path, output_path=None, profile='zlib_6',
     try:
         prof = COMPRESSION_PROFILES.get(profile, COMPRESSION_PROFILES['zlib_6'])
 
-        with astropy_fits.open(fits_path, memmap=False) as hdul:
+        with astropy_fits.open(fits_path, memmap=True) as hdul:
             data = hdul[0].data
             header = hdul[0].header.copy()
 
-        if data is None:
-            return {'status': 'skipped', 'message': 'No image data',
-                    'file': str(fits_path)}
+            if data is None:
+                return {'status': 'skipped', 'message': 'No image data',
+                        'file': str(fits_path)}
 
-        # Apply header overrides
-        if header_overrides:
-            for k, v in header_overrides.items():
-                header[k] = v
+            # Apply header overrides
+            if header_overrides:
+                for k, v in header_overrides.items():
+                    header[k] = v
 
-        data = data.copy()
-        if not data.flags['C_CONTIGUOUS']:
-            data = np.ascontiguousarray(data)
-        if data.dtype.byteorder == '>':
-            data = data.byteswap().newbyteorder()
+            # Single copy from memmap — avoid double allocation
+            if data.dtype.byteorder == '>':
+                data = data.byteswap().newbyteorder()
+            if not data.flags['C_CONTIGUOUS']:
+                data = np.ascontiguousarray(data)
+            else:
+                data = data.copy()  # Copy once to detach from memmap
 
         if output_path is None:
             output_path = str(Path(fits_path).with_suffix('.xisf'))
@@ -846,11 +887,7 @@ def xisf_to_fz(xisf_path, output_path=None):
 def fz_to_xisf(fz_path, output_path=None, profile='zlib_6'):
     """Convert FITS.FZ to XISF."""
     try:
-        result = fz_to_fits(fz_path, output_path=None)  # temp FITS in memory
-        if result['status'] != 'success':
-            return result
-
-        # Read the decompressed data directly
+        # Read the decompressed data directly from the FZ file
         with astropy_fits.open(fz_path, memmap=False) as hdul:
             data = None
             header = None
@@ -912,9 +949,9 @@ def recompress_xisf(xisf_path, output_path=None, profile='zlib_6'):
                 'output': output_path, 'codec': prof['codec']}
 
     except Exception as e:
-        if os.path.exists(str(xisf_path) + '.tmp_recomp'):
+        if os.path.exists(str(output_path) + '.tmp_recomp'):
             try:
-                os.remove(str(xisf_path) + '.tmp_recomp')
+                os.remove(str(output_path) + '.tmp_recomp')
             except Exception:
                 pass
         return {'status': 'failed', 'message': str(e), 'file': str(xisf_path)}
@@ -1004,6 +1041,8 @@ def read_xisf_compression_codec(filepath) -> str:
             if sig != b'XISF0100':
                 return ''
             header_length = struct.unpack('<I', f.read(4))[0]
+            if header_length > MAX_HEADER_SIZE:
+                raise ValueError(f"XISF header length {header_length} exceeds maximum {MAX_HEADER_SIZE}")
             f.read(4)  # reserved
             xml_bytes = f.read(header_length)
 
@@ -1011,7 +1050,7 @@ def read_xisf_compression_codec(filepath) -> str:
         if xml_string.startswith('<?xml'):
             xml_string = xml_string[xml_string.index('?>') + 2:].strip()
 
-        root = ET.fromstring(xml_string)
+        root = SafeET.fromstring(xml_string)
         ns = {'xisf': 'http://www.pixinsight.com/xisf'}
         image = root.find('xisf:Image', ns) or root.find('Image')
         if image is None:
@@ -1093,13 +1132,13 @@ def convert_batch(source_dir, conversion_type, profile='zlib_6',
         return stats
 
     func_map = {
-        'fits_to_xisf': lambda fp: fits_to_xisf(fp, profile=profile),
-        'xisf_to_fits': lambda fp: xisf_to_fits(fp),
-        'fits_to_fz': lambda fp: fits_to_fz(fp),
-        'fz_to_fits': lambda fp: fz_to_fits(fp),
-        'xisf_to_fz': lambda fp: xisf_to_fz(fp),
-        'fz_to_xisf': lambda fp: fz_to_xisf(fp, profile=profile),
-        'recompress_xisf': lambda fp: recompress_xisf(fp, profile=profile),
+        'fits_to_xisf': functools.partial(fits_to_xisf, profile=profile),
+        'xisf_to_fits': xisf_to_fits,
+        'fits_to_fz': fits_to_fz,
+        'fz_to_fits': fz_to_fits,
+        'xisf_to_fz': xisf_to_fz,
+        'fz_to_xisf': functools.partial(fz_to_xisf, profile=profile),
+        'recompress_xisf': functools.partial(recompress_xisf, profile=profile),
     }
 
     convert_func = func_map.get(conversion_type)
