@@ -15,6 +15,7 @@ import subprocess
 import logging
 import configparser
 import glob
+import time
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
@@ -35,14 +36,23 @@ KNOWN_REDUCERS = {
 REDUCER_TOLERANCE = 0.03
 
 
+_cached_astap_path = None
+_astap_path_checked = False
+
+
 def find_astap_executable() -> Optional[str]:
-    """Auto-detect ASTAP installation path (cross-platform)"""
+    """Auto-detect ASTAP installation path (cross-platform). Cached after first call."""
+    global _cached_astap_path, _astap_path_checked
+    if _astap_path_checked:
+        return _cached_astap_path
+
     import shutil
-    from pathlib import Path
 
     # Try PATH first (most reliable, works on all platforms)
     found = shutil.which("astap_cli")
     if found:
+        _cached_astap_path = found
+        _astap_path_checked = True
         return found
 
     # Platform-specific fallback paths
@@ -76,8 +86,11 @@ def find_astap_executable() -> Optional[str]:
 
     for path in common_paths:
         if path.is_file():
+            _cached_astap_path = str(path)
+            _astap_path_checked = True
             return str(path)
 
+    _astap_path_checked = True
     return None
 
 
@@ -127,6 +140,9 @@ class PlateSolver:
         self._db_info = None
 
         if executable_path:
+            exe_name = os.path.basename(executable_path).lower()
+            if not any(name in exe_name for name in ('astap', 'solve-field', 'astrometry')):
+                logger.warning(f"Executable path does not appear to be a known plate solver: {executable_path}")
             self.executable = executable_path
         elif solver == 'astap':
             self.executable = find_astap_executable()
@@ -135,9 +151,11 @@ class PlateSolver:
 
     def is_available(self) -> bool:
         """Check if solver is available"""
-        if self.solver == 'astap':
-            return self.executable is not None and os.path.isfile(self.executable)
-        return False
+        if not self.executable or not os.path.isfile(self.executable):
+            return False
+        # Verify it's a recognized plate solver
+        exe_name = os.path.basename(self.executable).lower()
+        return any(name in exe_name for name in ('astap', 'solve-field', 'astrometry'))
 
     def check_database(self) -> Optional[Dict]:
         """Check if a star database is installed. Returns info dict or None."""
@@ -209,6 +227,7 @@ class PlateSolver:
             cmd.extend(['-d', db_info['path']])
 
         try:
+            solve_start = time.time()
             result = subprocess.run(
                 cmd,
                 capture_output=True,
@@ -221,6 +240,11 @@ class PlateSolver:
             # ASTAP writes the .ini next to the source file with same base name
             ini_path = Path(filepath).with_suffix('.ini')
             if ini_path.exists():
+                # Verify the INI was written after solve started (TOCTOU protection)
+                if ini_path.stat().st_mtime < solve_start:
+                    logger.warning(f"INI file predates solve start, ignoring stale result: {ini_path}")
+                    self._cleanup_astap_files(filepath)
+                    return {'solved': False, 'error': 'Stale INI file detected (predates solve start)'}
                 solution = self._parse_astap_ini(str(ini_path))
 
                 # On failure, attach ASTAP diagnostic output
@@ -274,8 +298,8 @@ class PlateSolver:
                 p = Path(filepath).with_suffix(suffix)
                 if p.exists():
                     p.unlink()
-            except OSError:
-                pass
+            except OSError as e:
+                logger.debug(f"Failed to cleanup ASTAP temp file: {e}")
 
     def _parse_astap_ini(self, ini_path: str) -> Dict:
         """Parse ASTAP .ini solution file (KEY=VALUE format, no section headers)"""

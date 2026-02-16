@@ -121,6 +121,12 @@ class GlobalSignalBus(QObject):
     busy_state_changed = pyqtSignal(bool)  # is_busy
 
     # =========================================================================
+    # Bug Reporting Signals
+    # =========================================================================
+    bug_report_crash = pyqtSignal(object)  # report dict from crash handler
+    bug_report_result = pyqtSignal(bool, str)  # (was_sent, report_id)
+
+    # =========================================================================
     # General Application Signals
     # =========================================================================
     log_message = pyqtSignal(str, str)  # level, message (level: INFO, WARNING, ERROR)

@@ -12,6 +12,7 @@ and auto-save functionality. Works on top of the existing DatabaseManager.
 import json
 import csv
 import logging
+import threading
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional, Tuple
@@ -36,69 +37,41 @@ class ObservationHistory:
     # =========================================================================
 
     def get_global_stats(self) -> Dict[str, Any]:
-        """Get global overview statistics across all observations."""
+        """Get global overview statistics across all observations (single query)."""
         with self.db.get_connection() as conn:
             c = conn.cursor()
 
-            # Total targets
-            c.execute("SELECT COUNT(*) FROM targets")
-            total_targets = c.fetchone()[0]
-
-            # Total observations (sessions)
-            c.execute("SELECT COUNT(*) FROM observations")
-            total_observations = c.fetchone()[0]
-
-            # Total integration time
-            c.execute("SELECT COALESCE(SUM(exposure_time), 0) FROM observations")
-            total_integration = c.fetchone()[0]
-
-            # Total frames
-            c.execute("SELECT COALESCE(SUM(frame_count), 0) FROM observations")
-            total_frames = c.fetchone()[0]
-
-            # Date range
-            c.execute("SELECT MIN(observation_date), MAX(observation_date) FROM observations")
+            # Combined into a single query for ~10x fewer round-trips
+            c.execute("""
+                SELECT
+                    (SELECT COUNT(*) FROM targets),
+                    (SELECT COUNT(*) FROM observations),
+                    (SELECT COALESCE(SUM(exposure_time), 0) FROM observations),
+                    (SELECT COALESCE(SUM(frame_count), 0) FROM observations),
+                    (SELECT MIN(observation_date) FROM observations),
+                    (SELECT MAX(observation_date) FROM observations),
+                    (SELECT COUNT(DISTINCT observation_date) FROM observations),
+                    (SELECT COUNT(DISTINCT filter) FROM observations WHERE filter IS NOT NULL),
+                    (SELECT COUNT(DISTINCT telescope) FROM observations WHERE telescope IS NOT NULL AND telescope != ''),
+                    (SELECT COUNT(DISTINCT camera) FROM observations WHERE camera IS NOT NULL AND camera != ''),
+                    (SELECT AVG(hfr) FROM observations WHERE hfr IS NOT NULL AND hfr > 0),
+                    (SELECT AVG(fwhm) FROM observations WHERE fwhm IS NOT NULL AND fwhm > 0)
+            """)
             row = c.fetchone()
-            first_date = row[0] if row else None
-            last_date = row[1] if row else None
-
-            # Unique observation nights
-            c.execute("SELECT COUNT(DISTINCT observation_date) FROM observations")
-            unique_nights = c.fetchone()[0]
-
-            # Unique filters
-            c.execute("SELECT COUNT(DISTINCT filter) FROM observations WHERE filter IS NOT NULL")
-            unique_filters = c.fetchone()[0]
-
-            # Unique telescopes
-            c.execute("SELECT COUNT(DISTINCT telescope) FROM observations WHERE telescope IS NOT NULL AND telescope != ''")
-            unique_telescopes = c.fetchone()[0]
-
-            # Unique cameras
-            c.execute("SELECT COUNT(DISTINCT camera) FROM observations WHERE camera IS NOT NULL AND camera != ''")
-            unique_cameras = c.fetchone()[0]
-
-            # Average HFR
-            c.execute("SELECT AVG(hfr) FROM observations WHERE hfr IS NOT NULL AND hfr > 0")
-            avg_hfr = c.fetchone()[0]
-
-            # Average FWHM
-            c.execute("SELECT AVG(fwhm) FROM observations WHERE fwhm IS NOT NULL AND fwhm > 0")
-            avg_fwhm = c.fetchone()[0]
 
             return {
-                'total_targets': total_targets,
-                'total_observations': total_observations,
-                'total_integration_seconds': total_integration,
-                'total_frames': total_frames,
-                'first_observation': first_date,
-                'last_observation': last_date,
-                'unique_nights': unique_nights,
-                'unique_filters': unique_filters,
-                'unique_telescopes': unique_telescopes,
-                'unique_cameras': unique_cameras,
-                'avg_hfr': round(avg_hfr, 2) if avg_hfr else None,
-                'avg_fwhm': round(avg_fwhm, 2) if avg_fwhm else None,
+                'total_targets': row[0],
+                'total_observations': row[1],
+                'total_integration_seconds': row[2],
+                'total_frames': row[3],
+                'first_observation': row[4],
+                'last_observation': row[5],
+                'unique_nights': row[6],
+                'unique_filters': row[7],
+                'unique_telescopes': row[8],
+                'unique_cameras': row[9],
+                'avg_hfr': round(row[10], 2) if row[10] else None,
+                'avg_fwhm': round(row[11], 2) if row[11] else None,
             }
 
     # =========================================================================
@@ -548,27 +521,29 @@ class ObservationHistory:
             )
             targets_imported += 1
 
+            # Batch dedup: delete all matching obs in a single connection [PERF]
+            if observations:
+                with self.db.get_connection() as conn:
+                    c = conn.cursor()
+                    for obs in observations:
+                        obs_date = obs.get('observation_date', '')
+                        if obs_date:
+                            c.execute("""
+                                DELETE FROM observations
+                                WHERE target_id = ?
+                                  AND observation_date = ?
+                                  AND COALESCE(filter, '') = ?
+                                  AND COALESCE(telescope, '') = ?
+                                  AND COALESCE(camera, '') = ?
+                            """, (target_id, obs_date,
+                                  obs.get('filter') or '',
+                                  obs.get('telescope') or '',
+                                  obs.get('camera') or ''))
+
             for obs in observations:
                 # Re-serialize JSON fields
                 weather_data = obs.get('weather_data')
                 file_paths = obs.get('file_paths')
-                obs_date = obs.get('observation_date', '')
-
-                # Dedup: delete matching observation before insert
-                if obs_date:
-                    with self.db.get_connection() as conn:
-                        c = conn.cursor()
-                        c.execute("""
-                            DELETE FROM observations
-                            WHERE target_id = ?
-                              AND observation_date = ?
-                              AND COALESCE(filter, '') = ?
-                              AND COALESCE(telescope, '') = ?
-                              AND COALESCE(camera, '') = ?
-                        """, (target_id, obs_date,
-                              obs.get('filter') or '',
-                              obs.get('telescope') or '',
-                              obs.get('camera') or ''))
 
                 self.db.add_observation(
                     target_id=target_id,
@@ -628,46 +603,73 @@ class ObservationHistory:
         """
         targets_seen = set()
         obs_imported = 0
+        errors = []
 
+        # Phase 1: Parse and validate all rows [PERF]
+        parsed_rows = []
         with open(file_path, 'r', encoding='utf-8') as f:
             reader = csv.DictReader(f)
+            for i, row in enumerate(reader, start=1):
+                try:
+                    target_name = row.get('target_name', '').strip()
+                    if not target_name:
+                        continue
+                    try:
+                        ra_val = float(row['ra']) if row.get('ra') else None
+                    except (ValueError, TypeError):
+                        errors.append(f"Row {i}: invalid ra data, skipped")
+                        continue
+                    try:
+                        dec_val = float(row['dec']) if row.get('dec') else None
+                    except (ValueError, TypeError):
+                        errors.append(f"Row {i}: invalid dec data, skipped")
+                        continue
+                    parsed_rows.append((row, target_name, ra_val, dec_val))
+                except (ValueError, TypeError, KeyError) as e:
+                    errors.append(f"Row {i}: invalid data ({e}), skipped")
 
-            for row in reader:
-                target_name = row.get('target_name', '').strip()
-                if not target_name:
-                    continue
-
-                # Add/update target
+        # Phase 2: Add targets and collect dedup keys
+        dedup_keys = []  # (target_id, obs_date, filter, telescope, camera)
+        insert_rows = []
+        for row, target_name, ra_val, dec_val in parsed_rows:
+            try:
                 target_id = self.db.add_target(
                     name=target_name,
                     canonical_name=row.get('canonical_name') or None,
-                    ra=float(row['ra']) if row.get('ra') else None,
-                    dec=float(row['dec']) if row.get('dec') else None,
+                    ra=ra_val, dec=dec_val,
                     object_type=row.get('object_type') or None,
                 )
                 targets_seen.add(target_name)
-
-                # Dedup: delete matching observation before insert
                 obs_date = row.get('observation_date', '')
                 if obs_date:
-                    with self.db.get_connection() as conn:
-                        c = conn.cursor()
-                        c.execute("""
-                            DELETE FROM observations
-                            WHERE target_id = ?
-                              AND observation_date = ?
-                              AND COALESCE(filter, '') = ?
-                              AND COALESCE(telescope, '') = ?
-                              AND COALESCE(camera, '') = ?
-                        """, (target_id, obs_date,
-                              row.get('filter') or '',
-                              row.get('telescope') or '',
-                              row.get('camera') or ''))
+                    dedup_keys.append((target_id, obs_date,
+                                      row.get('filter') or '',
+                                      row.get('telescope') or '',
+                                      row.get('camera') or ''))
+                insert_rows.append((target_id, row))
+            except Exception as e:
+                errors.append(f"Target '{target_name}': {e}")
 
-                # Add observation
+        # Phase 3: Batch dedup in single connection
+        if dedup_keys:
+            with self.db.get_connection() as conn:
+                c = conn.cursor()
+                for key in dedup_keys:
+                    c.execute("""
+                        DELETE FROM observations
+                        WHERE target_id = ?
+                          AND observation_date = ?
+                          AND COALESCE(filter, '') = ?
+                          AND COALESCE(telescope, '') = ?
+                          AND COALESCE(camera, '') = ?
+                    """, key)
+
+        # Phase 4: Insert all observations
+        for target_id, row in insert_rows:
+            try:
                 self.db.add_observation(
                     target_id=target_id,
-                    observation_date=obs_date,
+                    observation_date=row.get('observation_date', ''),
                     filter_name=row.get('filter') or None,
                     exposure_time=float(row['exposure_time']) if row.get('exposure_time') else None,
                     frame_count=int(row['frame_count']) if row.get('frame_count') else None,
@@ -680,7 +682,11 @@ class ObservationHistory:
                     notes=row.get('notes') or None,
                 )
                 obs_imported += 1
+            except (ValueError, TypeError, KeyError) as e:
+                errors.append(f"Observation insert: {e}")
 
+        if errors:
+            logger.warning(f"CSV import had {len(errors)} error(s): {'; '.join(errors[:10])}")
         logger.info(f"Imported {len(targets_seen)} targets, {obs_imported} observations from CSV: {file_path}")
         return len(targets_seen), obs_imported
 
@@ -771,9 +777,11 @@ class ObservationHistory:
                     camera_str = str(instruments or '')
                 setup_str = f"{telescope_str} + {camera_str}" if telescope_str and camera_str else telescope_str or camera_str or ''
 
-                # Build observations from files_by_date
+                # Build observations from files_by_date (batch dedup) [PERF]
                 files_by_date = target_data.get('files_by_date', {})
 
+                # Collect all obs rows first, then batch-delete + insert in one connection
+                obs_rows = []
                 for date, date_data in files_by_date.items():
                     time_by_filter = date_data.get('time_by_filter', {})
                     for filter_name, exposures in time_by_filter.items():
@@ -784,10 +792,13 @@ class ObservationHistory:
                         obs_date = str(date)[:10] if date else ''
                         if not obs_date:
                             continue
+                        obs_rows.append((obs_date, filter_name, total_exp, frame_count))
 
-                        # Dedup: delete existing observation with same key
-                        with self.db.get_connection() as conn:
-                            c = conn.cursor()
+                if obs_rows:
+                    with self.db.get_connection() as conn:
+                        c = conn.cursor()
+                        for obs_date, filter_name, total_exp, frame_count in obs_rows:
+                            # Dedup: delete existing observation with same key
                             c.execute("""
                                 DELETE FROM observations
                                 WHERE target_id = ?
@@ -798,6 +809,7 @@ class ObservationHistory:
                             """, (target_id, obs_date, filter_name or '',
                                   telescope_str or '', camera_str or ''))
 
+                    for obs_date, filter_name, total_exp, frame_count in obs_rows:
                         self.db.add_observation(
                             target_id=target_id,
                             observation_date=obs_date,
@@ -1105,18 +1117,21 @@ class ObservationHistory:
         Returns the number of observations updated.
         """
         import ast
+        ALLOWED_COLUMNS = {'telescope', 'camera', 'filter'}
         updated = 0
         with self.db.get_connection() as conn:
             c = conn.cursor()
 
             for col in ('telescope', 'camera'):
+                if col not in ALLOWED_COLUMNS:
+                    continue
                 c.execute(f"SELECT DISTINCT {col} FROM observations WHERE {col} IS NOT NULL AND {col} != ''")
                 values = [row[col] for row in c.fetchall()]
 
                 for raw in values:
                     cleaned = raw
-                    # Step 1: Detect Python list repr
-                    if raw.startswith('[') and raw.endswith(']'):
+                    # Step 1: Detect Python list repr (with size limit against DoS)
+                    if raw.startswith('[') and raw.endswith(']') and len(raw) < 10000:
                         try:
                             parsed = ast.literal_eval(raw)
                             if isinstance(parsed, list):
@@ -1192,10 +1207,13 @@ def format_time(seconds: float, lang: str = 'en') -> str:
 
 # Global singleton
 _history_instance = None
+_history_lock = threading.Lock()
 
 def get_history() -> ObservationHistory:
-    """Get global ObservationHistory instance."""
+    """Get global ObservationHistory instance (thread-safe)."""
     global _history_instance
     if _history_instance is None:
-        _history_instance = ObservationHistory()
+        with _history_lock:
+            if _history_instance is None:
+                _history_instance = ObservationHistory()
     return _history_instance

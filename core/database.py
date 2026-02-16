@@ -9,6 +9,7 @@ Provides thread-safe access and automatic schema migrations.
 ================================================================================
 """
 
+import os
 import sqlite3
 import json
 import logging
@@ -25,8 +26,15 @@ DB_DIR = Path.home() / '.astromanager'
 DB_PATH = DB_DIR / 'astromanager.db'
 DB_BACKUP_PATH = DB_DIR / 'astromanager_backup.db'
 
-# Ensure database directory exists
-DB_DIR.mkdir(parents=True, exist_ok=True)
+# Ensure database directory exists with restrictive permissions
+import platform as _platform
+try:
+    DB_DIR.mkdir(parents=True, exist_ok=True)
+    if _platform.system() != 'Windows':
+        import os as _os
+        _os.chmod(str(DB_DIR), 0o700)
+except OSError:
+    pass
 
 # Thread-local storage for database connections
 _thread_local = threading.local()
@@ -60,19 +68,26 @@ class DatabaseManager:
     def get_connection(self):
         """
         Get thread-local database connection with context manager.
+        Supports nesting: only the outermost context commits/rollbacks.
 
         Usage:
             with db.get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute("SELECT * FROM targets")
         """
-        if not hasattr(_thread_local, 'connection'):
+        if not hasattr(_thread_local, 'connection') or _thread_local.connection is None:
             _thread_local.connection = sqlite3.connect(
                 self.db_path,
                 check_same_thread=False,
                 timeout=30.0
             )
             _thread_local.connection.row_factory = sqlite3.Row
+            # Set restrictive permissions on DB file
+            if _platform.system() != 'Windows':
+                try:
+                    os.chmod(str(self.db_path), 0o600)
+                except OSError:
+                    pass
 
             # Performance optimizations
             cursor = _thread_local.connection.cursor()
@@ -82,17 +97,43 @@ class DatabaseManager:
             cursor.execute("PRAGMA temp_store=MEMORY")
             cursor.execute("PRAGMA foreign_keys=ON")
 
+        # Track nesting depth — only outermost context commits/rollbacks
+        if not hasattr(_thread_local, '_depth'):
+            _thread_local._depth = 0
+        _thread_local._depth += 1
+
         try:
             yield _thread_local.connection
         except Exception as e:
-            _thread_local.connection.rollback()
+            _thread_local._depth -= 1
+            if _thread_local._depth == 0:
+                _thread_local.connection.rollback()
             logger.error(f"Database error: {e}")
             raise
         else:
-            _thread_local.connection.commit()
+            _thread_local._depth -= 1
+            if _thread_local._depth == 0:
+                _thread_local.connection.commit()
+
+    def close_connection(self):
+        """Close the thread-local database connection if open."""
+        if hasattr(_thread_local, 'connection') and _thread_local.connection is not None:
+            try:
+                _thread_local.connection.close()
+            except Exception:
+                pass
+            _thread_local.connection = None
+            _thread_local._depth = 0
 
     def init_database(self):
-        """Initialize database schema"""
+        """Initialize database schema with integrity check and recovery"""
+        # Check integrity first — recover from backup if corrupt
+        try:
+            self._check_integrity()
+        except Exception as e:
+            logger.error(f"Database integrity check failed: {e}")
+            self._attempt_recovery()
+
         with self.get_connection() as conn:
             cursor = conn.cursor()
 
@@ -183,8 +224,7 @@ class DatabaseManager:
                 )
             """)
 
-            # Create indexes for performance
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_targets_name ON targets(name)")
+            # Create indexes (idx_targets_name omitted: UNIQUE on name already creates one)
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_targets_canonical ON targets(canonical_name)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_obs_target ON observations(target_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_obs_date ON observations(observation_date)")
@@ -194,24 +234,73 @@ class DatabaseManager:
             # Set schema version
             cursor.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (1)")
 
-            conn.commit()
             logger.info("Database initialized successfully")
+
+    def _check_integrity(self):
+        """Run PRAGMA integrity_check on the database"""
+        if not self.db_path.exists():
+            return
+        conn = sqlite3.connect(self.db_path, timeout=10.0)
+        try:
+            result = conn.execute("PRAGMA integrity_check").fetchone()
+            if result[0] != 'ok':
+                raise sqlite3.DatabaseError(f"Integrity check failed: {result[0]}")
+        finally:
+            conn.close()
+
+    def _attempt_recovery(self):
+        """Attempt to recover from a corrupted database using backup"""
+        import shutil
+        if DB_BACKUP_PATH.exists():
+            logger.warning("Attempting database recovery from backup...")
+            try:
+                # Verify backup integrity first
+                conn = sqlite3.connect(DB_BACKUP_PATH, timeout=10.0)
+                result = conn.execute("PRAGMA integrity_check").fetchone()
+                conn.close()
+                if result[0] == 'ok':
+                    shutil.copy2(str(DB_BACKUP_PATH), str(self.db_path))
+                    logger.info("Database recovered from backup")
+                    return
+                else:
+                    logger.error("Backup is also corrupt")
+            except Exception as e:
+                logger.error(f"Recovery from backup failed: {e}")
+
+        # Last resort: delete corrupt DB and recreate from scratch
+        logger.warning("Recreating database from scratch")
+        try:
+            self.db_path.unlink(missing_ok=True)
+        except Exception:
+            pass
 
     def backup_database(self) -> Optional[Path]:
         """Create database backup using SQLite backup API (WAL-safe)"""
+        if not self.db_path.exists():
+            return None
+        src = None
+        dst = None
         try:
-            if self.db_path.exists():
-                import sqlite3 as _sqlite3
-                src = _sqlite3.connect(self.db_path, timeout=30.0)
-                dst = _sqlite3.connect(str(DB_BACKUP_PATH))
-                src.backup(dst)
-                dst.close()
-                src.close()
-                logger.info(f"Database backed up to {DB_BACKUP_PATH}")
-                return DB_BACKUP_PATH
+            import sqlite3 as _sqlite3
+            src = _sqlite3.connect(self.db_path, timeout=30.0)
+            dst = _sqlite3.connect(str(DB_BACKUP_PATH))
+            src.backup(dst)
+            logger.info(f"Database backed up to {DB_BACKUP_PATH}")
+            return DB_BACKUP_PATH
         except Exception as e:
             logger.error(f"Database backup failed: {e}")
-        return None
+            return None
+        finally:
+            if dst:
+                try:
+                    dst.close()
+                except Exception:
+                    pass
+            if src:
+                try:
+                    src.close()
+                except Exception:
+                    pass
 
     # =========================================================================
     # Target Management
@@ -293,30 +382,27 @@ class DatabaseManager:
             return [dict(row) for row in cursor.fetchall()]
 
     def update_target_stats(self, target_id: int):
-        """Update target statistics (exposure time, frame count, dates)"""
+        """Update target statistics using a single aggregate query"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
+            # Single scan instead of 4 correlated subqueries
+            cursor.execute("""
+                SELECT COALESCE(SUM(exposure_time), 0),
+                       COALESCE(SUM(frame_count), 0),
+                       MIN(observation_date),
+                       MAX(observation_date)
+                FROM observations WHERE target_id = ?
+            """, (target_id,))
+            row = cursor.fetchone()
             cursor.execute("""
                 UPDATE targets SET
-                    total_exposure_time = (
-                        SELECT COALESCE(SUM(exposure_time), 0)
-                        FROM observations WHERE target_id = ?
-                    ),
-                    total_frames = (
-                        SELECT COALESCE(SUM(frame_count), 0)
-                        FROM observations WHERE target_id = ?
-                    ),
-                    first_observed = (
-                        SELECT MIN(observation_date)
-                        FROM observations WHERE target_id = ?
-                    ),
-                    last_observed = (
-                        SELECT MAX(observation_date)
-                        FROM observations WHERE target_id = ?
-                    ),
+                    total_exposure_time = ?,
+                    total_frames = ?,
+                    first_observed = ?,
+                    last_observed = ?,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
-            """, (target_id, target_id, target_id, target_id, target_id))
+            """, (row[0], row[1], row[2], row[3], target_id))
 
     # =========================================================================
     # Observation Management
@@ -382,7 +468,12 @@ class DatabaseManager:
 
             row = cursor.fetchone()
             if row:
-                return json.loads(row['weather_data'])
+                try:
+                    return json.loads(row['weather_data'])
+                except (json.JSONDecodeError, TypeError):
+                    logger.warning(f"Corrupt weather cache for {date}, removing")
+                    cursor.execute("DELETE FROM weather_cache WHERE observation_date = ? AND latitude = ? AND longitude = ?", (date, latitude, longitude))
+                    return None
             return None
 
     def cache_weather(self, date: str, latitude: float, longitude: float, weather_data: Dict):
@@ -408,7 +499,12 @@ class DatabaseManager:
 
             row = cursor.fetchone()
             if row:
-                return json.loads(row['header_data'])
+                try:
+                    return json.loads(row['header_data'])
+                except (json.JSONDecodeError, TypeError):
+                    logger.warning(f"Corrupt header cache for {file_path}, removing")
+                    cursor.execute("DELETE FROM header_cache WHERE file_path = ?", (file_path,))
+                    return None
             return None
 
     def cache_header(self, file_path: str, header_data: Dict, file_hash: Optional[str] = None):
@@ -443,6 +539,8 @@ class DatabaseManager:
 
     def clear_old_cache(self, days: int = 90):
         """Clear cache older than specified days"""
+        if not isinstance(days, int) or days < 1:
+            days = 90
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
@@ -455,10 +553,13 @@ class DatabaseManager:
 
 # Global singleton instance
 _db_manager = None
+_db_lock = threading.Lock()
 
 def get_db() -> DatabaseManager:
-    """Get global database manager instance"""
+    """Get global database manager instance (thread-safe)"""
     global _db_manager
     if _db_manager is None:
-        _db_manager = DatabaseManager()
+        with _db_lock:
+            if _db_manager is None:
+                _db_manager = DatabaseManager()
     return _db_manager

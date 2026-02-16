@@ -9,9 +9,10 @@ Reuses existing fits_analyser_gui.py analysis engine.
 ================================================================================
 """
 
+import html
 import os
+import shutil
 import sys
-import locale
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QCheckBox,
     QPushButton, QLabel, QLineEdit, QFileDialog, QSpinBox,
@@ -43,11 +44,8 @@ class AnalysisTab(QWidget):
         self.config = get_config()
         self.lang = self.config.get('application.language', 'auto')
         if self.lang == 'auto':
-            try:
-                lang = locale.getdefaultlocale()[0]
-                self.lang = 'fr' if lang and lang.startswith('fr') else 'en'
-            except Exception:
-                self.lang = 'en'
+            from core.i18n import get_lang
+            self.lang = get_lang()
         self._init_ui()
         self._restore_options()
         self._connect_signals()
@@ -606,6 +604,7 @@ class AnalysisTab(QWidget):
             self.save_history_btn.setVisible(not self.cb_auto_history.isChecked())
 
             signals.analysis_completed.emit(result)
+            self.worker = None
 
             # Show extension mismatch dialog if any were detected
             mismatches = result.get('extension_mismatches', [])
@@ -613,6 +612,7 @@ class AnalysisTab(QWidget):
                 self._show_extension_fix_dialog(mismatches)
         else:
             self.console.append(f"\n{'='*40}\n{message}")
+            self.worker = None
 
     def _show_extension_fix_dialog(self, mismatches):
         """Show a dialog listing files with wrong extensions and offer to rename them."""
@@ -675,11 +675,11 @@ class AnalysisTab(QWidget):
                 new_path = base + m['suggested_extension']
                 try:
                     if not os.path.exists(new_path):
-                        os.rename(old_path, new_path)
+                        shutil.move(old_path, new_path)
                         renamed += 1
                     else:
                         errors.append(f"{os.path.basename(old_path)}: target already exists")
-                except OSError as e:
+                except (OSError, shutil.Error) as e:
                     errors.append(f"{os.path.basename(old_path)}: {e}")
             msg = self._tr(
                 f"Renamed {renamed}/{len(mismatches)} file(s).",
@@ -730,49 +730,52 @@ class AnalysisTab(QWidget):
 
         total_hours = total_exposure_s / 3600.0
 
+        _esc = html.escape
+
         # Build HTML
-        html = f"""
+        out_html = f"""
         <h2>{self._tr('Analysis Results', 'Résultats d\'Analyse')}</h2>
         <table style="border-collapse: collapse; width: 100%;">
         <tr><td style="padding: 4px;"><b>{self._tr('Total files', 'Fichiers totaux')}:</b></td><td style="padding: 4px;">{total_files}</td></tr>
         <tr><td style="padding: 4px;"><b>{self._tr('Targets', 'Cibles')}:</b></td><td style="padding: 4px;">{total_targets}</td></tr>
         <tr><td style="padding: 4px;"><b>{self._tr('Total integration', 'Intégration totale')}:</b></td><td style="padding: 4px;">{total_hours:.1f}h ({total_exposure_s:.0f}s)</td></tr>
-        <tr><td style="padding: 4px;"><b>{self._tr('Instruments', 'Instruments')}:</b></td><td style="padding: 4px;">{', '.join(sorted(instruments)) or 'N/A'}</td></tr>
-        <tr><td style="padding: 4px;"><b>{self._tr('Telescopes', 'Télescopes')}:</b></td><td style="padding: 4px;">{', '.join(sorted(telescopes)) or 'N/A'}</td></tr>
-        <tr><td style="padding: 4px;"><b>{self._tr('Output', 'Sortie')}:</b></td><td style="padding: 4px;">{output}</td></tr>
+        <tr><td style="padding: 4px;"><b>{self._tr('Instruments', 'Instruments')}:</b></td><td style="padding: 4px;">{', '.join(_esc(i) for i in sorted(instruments)) or 'N/A'}</td></tr>
+        <tr><td style="padding: 4px;"><b>{self._tr('Telescopes', 'Télescopes')}:</b></td><td style="padding: 4px;">{', '.join(_esc(t) for t in sorted(telescopes)) or 'N/A'}</td></tr>
+        <tr><td style="padding: 4px;"><b>{self._tr('Output', 'Sortie')}:</b></td><td style="padding: 4px;">{_esc(str(output))}</td></tr>
         </table>
         """
 
         # Filter breakdown
         if all_filters:
-            html += f"<h3>{self._tr('Filter Distribution', 'Distribution des Filtres')}</h3>"
-            html += '<table style="border-collapse: collapse; width: 100%;">'
-            html += f'<tr style="background: #1a1e2e;"><th style="padding: 4px; text-align: left;">{self._tr("Filter", "Filtre")}</th>'
-            html += f'<th style="padding: 4px; text-align: right;">{self._tr("Files", "Fichiers")}</th>'
-            html += f'<th style="padding: 4px; text-align: right;">{self._tr("Time", "Temps")}</th></tr>'
+            out_html += f"<h3>{self._tr('Filter Distribution', 'Distribution des Filtres')}</h3>"
+            out_html += '<table style="border-collapse: collapse; width: 100%;">'
+            out_html += f'<tr style="background: #1a1e2e;"><th style="padding: 4px; text-align: left;">{self._tr("Filter", "Filtre")}</th>'
+            out_html += f'<th style="padding: 4px; text-align: right;">{self._tr("Files", "Fichiers")}</th>'
+            out_html += f'<th style="padding: 4px; text-align: right;">{self._tr("Time", "Temps")}</th></tr>'
             for filt in sorted(all_filters.keys()):
                 info = all_filters[filt]
                 time_h = info['time'] / 3600.0
-                html += f'<tr><td style="padding: 4px;">{prettify_filter_name(filt)}</td>'
-                html += f'<td style="padding: 4px; text-align: right;">{info["count"]}</td>'
-                html += f'<td style="padding: 4px; text-align: right;">{time_h:.1f}h</td></tr>'
-            html += '</table>'
+                safe_filter = _esc(prettify_filter_name(filt))
+                out_html += f'<tr><td style="padding: 4px;">{safe_filter}</td>'
+                out_html += f'<td style="padding: 4px; text-align: right;">{info["count"]}</td>'
+                out_html += f'<td style="padding: 4px; text-align: right;">{time_h:.1f}h</td></tr>'
+            out_html += '</table>'
 
         # Per-target details
-        html += f"<h3>{self._tr('Per-Target Details', 'Détails par Cible')}</h3>"
+        out_html += f"<h3>{self._tr('Per-Target Details', 'Détails par Cible')}</h3>"
         for target in sorted(data.keys()):
             info = data[target]
             files = info.get('files', [])
             target_exp = sum(f.get('info', {}).get('exposure_time', 0) or 0 for f in files)
             target_h = target_exp / 3600.0
             target_filters = set(f.get('info', {}).get('filter', '?') for f in files)
-            pretty_filters = ', '.join(sorted(prettify_filter_name(f) for f in target_filters))
-            html += f"<h4>🎯 {target}</h4>"
-            html += f"<p>{len(files)} {self._tr('files', 'fichiers')} | "
-            html += f"{target_h:.1f}h | "
-            html += f"{self._tr('Filters', 'Filtres')}: {pretty_filters}</p>"
+            pretty_filters = ', '.join(_esc(prettify_filter_name(f)) for f in sorted(target_filters))
+            out_html += f"<h4>🎯 {_esc(str(target))}</h4>"
+            out_html += f"<p>{len(files)} {self._tr('files', 'fichiers')} | "
+            out_html += f"{target_h:.1f}h | "
+            out_html += f"{self._tr('Filters', 'Filtres')}: {pretty_filters}</p>"
 
-        return html
+        return out_html
 
     def _open_output_folder(self):
         if self.output_folder:

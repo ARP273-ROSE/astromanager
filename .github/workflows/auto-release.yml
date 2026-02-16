@@ -3,17 +3,22 @@ name: Auto Release
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'LICENSE'
+      - 'docs/**'
 
 jobs:
   release:
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     permissions:
+      # Required for commit, tag, and release creation
       contents: write
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -21,6 +26,12 @@ jobs:
         id: version
         run: |
           CURRENT=$(grep -oP "(?<=__version__ = ')[^']+" core/__init__.py)
+
+          if [[ ! "$CURRENT" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid version format: '$CURRENT'. Expected semver (e.g. 1.2.3)."
+            exit 1
+          fi
+
           echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
 
           IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
@@ -46,7 +57,7 @@ jobs:
           git push origin "v${{ steps.version.outputs.new }}"
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@c95fe1c8d4571e2c3b57f46ee5a4d4b6bec5aeb9 # v2.2.1
         with:
           tag_name: "v${{ steps.version.outputs.new }}"
           name: "v${{ steps.version.outputs.new }}"

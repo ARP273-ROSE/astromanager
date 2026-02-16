@@ -11,13 +11,14 @@ Sub-tabs for folders, profiles, and options with airy layout.
 """
 
 import os
+import threading
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QCheckBox,
     QPushButton, QLabel, QLineEdit, QFileDialog, QRadioButton,
     QButtonGroup, QTextEdit, QTabWidget, QScrollArea, QFrame,
     QSizePolicy, QSpacerItem
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QFont
 
 from core.workers import UnifiedWorker, WorkerJob, JobType
@@ -37,18 +38,17 @@ except ImportError:
 class CompressionTab(QWidget):
     """Compression tab - Multi-format compression with profile selection"""
 
+    _scan_result_signal = pyqtSignal(int, float)
+
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._scan_result_signal.connect(self._on_scan_result)
         self.worker = None
         self.config = get_config()
         self.lang = self.config.get('application.language', 'auto')
         if self.lang == 'auto':
-            import locale
-            try:
-                loc = locale.getdefaultlocale()[0]
-                self.lang = 'fr' if loc and loc.lower().startswith('fr') else 'en'
-            except Exception:
-                self.lang = 'en'
+            from core.i18n import get_lang
+            self.lang = get_lang()
         self._init_ui()
         self._restore_options()
 
@@ -367,20 +367,26 @@ class CompressionTab(QWidget):
             self.preview_label.setText(self._tr("❌ Select a valid source folder", "❌ Sélectionnez un dossier source valide"))
             return
 
-        count = 0
-        total_size = 0
-        for root, _, files in os.walk(source):
-            for f in files:
-                if f.lower().endswith(('.fits', '.fit', '.xisf', '.fz')):
-                    count += 1
-                    try:
-                        total_size += os.path.getsize(os.path.join(root, f))
-                    except OSError:
-                        pass
+        self.preview_label.setText(self._tr("Scanning...", "Analyse en cours..."))
 
-        size_gb = total_size / (1024**3)
+        def _do_scan():
+            count = 0
+            total_size = 0
+            for root, _, files in os.walk(source):
+                for f in files:
+                    if f.lower().endswith(('.fits', '.fit', '.xisf', '.fz')):
+                        count += 1
+                        try:
+                            total_size += os.path.getsize(os.path.join(root, f))
+                        except OSError:
+                            pass
+            size_gb = total_size / (1024**3)
+            self._scan_result_signal.emit(count, size_gb)
+
+        threading.Thread(target=_do_scan, daemon=True).start()
+
+    def _on_scan_result(self, count, size_gb):
         estimated_gb = size_gb * 0.5  # Rough estimate for zlib_6
-
         self.preview_label.setText(
             f"{self._tr('Files', 'Fichiers')}: {count}\n"
             f"{self._tr('Total size', 'Taille totale')}: {size_gb:.1f} GB\n"
@@ -399,6 +405,7 @@ class CompressionTab(QWidget):
         self.console.clear()
         self.start_btn.setVisible(False)
         self.stop_btn.setVisible(True)
+        signals.busy_state_changed.emit(True)
 
         profile = self._get_selected_profile()
         backup = self.backup_input.text().strip() or ''
@@ -430,5 +437,7 @@ class CompressionTab(QWidget):
     def _on_finished(self, success, message, result):
         self.start_btn.setVisible(True)
         self.stop_btn.setVisible(False)
+        signals.busy_state_changed.emit(False)
         if success and result:
             signals.compression_completed.emit(result)
+        self.worker = None

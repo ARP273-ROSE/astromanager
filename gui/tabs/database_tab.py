@@ -21,6 +21,7 @@ from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QFont
 
 from core.config import get_config
+from core.i18n import get_lang
 from gui.theme import get_mono_font, prettify_filter_name
 
 logger = logging.getLogger(__name__)
@@ -176,18 +177,20 @@ class DatabaseTab(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.config = get_config()
-        self.lang = self.config.get('application.language', 'auto')
-        if self.lang == 'auto':
-            import locale
-            try:
-                loc = locale.getdefaultlocale()[0]
-                self.lang = 'fr' if loc and loc.startswith('fr') else 'en'
-            except Exception:
-                self.lang = 'en'
+        self.lang = get_lang()
 
-        self._search_timer = QTimer()
-        self._search_timer.setSingleShot(True)
-        self._search_timer.setInterval(300)
+        self._cam_search_timer = QTimer()
+        self._cam_search_timer.setSingleShot(True)
+        self._cam_search_timer.setInterval(300)
+        self._tel_search_timer = QTimer()
+        self._tel_search_timer.setSingleShot(True)
+        self._tel_search_timer.setInterval(300)
+        self._flt_search_timer = QTimer()
+        self._flt_search_timer.setSingleShot(True)
+        self._flt_search_timer.setInterval(300)
+        self._tgt_search_timer = QTimer()
+        self._tgt_search_timer.setSingleShot(True)
+        self._tgt_search_timer.setInterval(300)
 
         self._data_loaded = {
             'cameras': False, 'telescopes': False,
@@ -287,14 +290,21 @@ class DatabaseTab(QWidget):
         combo.currentIndexChanged.connect(callback)
         return combo
 
-    def _debounce(self, callback):
-        """Connect a debounced search to callback."""
-        try:
-            self._search_timer.timeout.disconnect()
-        except (TypeError, RuntimeError):
-            pass
-        self._search_timer.timeout.connect(callback)
-        self._search_timer.start()
+    def _debounce_cam(self):
+        """Debounced search for cameras panel."""
+        self._cam_search_timer.start()
+
+    def _debounce_tel(self):
+        """Debounced search for telescopes panel."""
+        self._tel_search_timer.start()
+
+    def _debounce_flt(self):
+        """Debounced search for filters panel."""
+        self._flt_search_timer.start()
+
+    def _debounce_tgt(self):
+        """Debounced search for targets panel."""
+        self._tgt_search_timer.start()
 
     # =========================================================================
     # CAMERAS
@@ -312,7 +322,8 @@ class DatabaseTab(QWidget):
         bar.addWidget(QLabel("🔍"))
         self._cam_search = QLineEdit()
         self._cam_search.setPlaceholderText(self._tr("Search cameras...", "Chercher caméras..."))
-        self._cam_search.textChanged.connect(lambda: self._debounce(self._apply_cam_filter))
+        self._cam_search_timer.timeout.connect(self._apply_cam_filter)
+        self._cam_search.textChanged.connect(self._debounce_cam)
         bar.addWidget(self._cam_search, 1)
 
         bar.addWidget(QLabel(self._tr("Brand:", "Marque:")))
@@ -480,7 +491,8 @@ class DatabaseTab(QWidget):
         bar.addWidget(QLabel("🔍"))
         self._tel_search = QLineEdit()
         self._tel_search.setPlaceholderText(self._tr("Search telescopes...", "Chercher télescopes..."))
-        self._tel_search.textChanged.connect(lambda: self._debounce(self._apply_tel_filter))
+        self._tel_search_timer.timeout.connect(self._apply_tel_filter)
+        self._tel_search.textChanged.connect(self._debounce_tel)
         bar.addWidget(self._tel_search, 1)
 
         bar.addWidget(QLabel(self._tr("Brand:", "Marque:")))
@@ -638,7 +650,8 @@ class DatabaseTab(QWidget):
         bar1.addWidget(QLabel("🔍"))
         self._flt_search = QLineEdit()
         self._flt_search.setPlaceholderText(self._tr("Search filters...", "Chercher filtres..."))
-        self._flt_search.textChanged.connect(lambda: self._debounce(self._apply_flt_filter))
+        self._flt_search_timer.timeout.connect(self._apply_flt_filter)
+        self._flt_search.textChanged.connect(self._debounce_flt)
         bar1.addWidget(self._flt_search, 1)
 
         bar1.addWidget(QLabel(self._tr("Brand:", "Marque:")))
@@ -845,7 +858,8 @@ class DatabaseTab(QWidget):
         bar.addWidget(QLabel("🔍"))
         self._tgt_search = QLineEdit()
         self._tgt_search.setPlaceholderText(self._tr("Search targets...", "Chercher cibles..."))
-        self._tgt_search.textChanged.connect(lambda: self._debounce(self._apply_tgt_filter))
+        self._tgt_search_timer.timeout.connect(self._apply_tgt_filter)
+        self._tgt_search.textChanged.connect(self._debounce_tgt)
         bar.addWidget(self._tgt_search, 1)
 
         bar.addWidget(QLabel(self._tr("Catalog:", "Catalogue:")))

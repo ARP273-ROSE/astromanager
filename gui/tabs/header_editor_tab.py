@@ -10,18 +10,20 @@ Integrates header_editor.py for bulk operations.
 """
 
 import os
+import threading
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGroupBox,
     QPushButton, QLabel, QLineEdit, QFileDialog, QComboBox,
     QTableWidget, QTableWidgetItem, QHeaderView, QTextEdit,
     QMessageBox, QAbstractItemView
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QFont, QColor
 
 from core.workers import UnifiedWorker, WorkerJob, JobType
 from core.signals import signals
 from core.config import get_config
+from core.i18n import get_lang
 from gui.theme import get_mono_font
 
 try:
@@ -39,19 +41,16 @@ except ImportError:
 class HeaderEditorTab(QWidget):
     """Header Editor tab - Mass FITS header editing"""
 
+    _headers_loaded_signal = pyqtSignal(list, dict)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.config = get_config()
-        self.lang = self.config.get('application.language', 'auto')
-        if self.lang == 'auto':
-            import locale
-            try:
-                loc = locale.getdefaultlocale()[0]
-                self.lang = 'fr' if loc and loc.lower().startswith('fr') else 'en'
-            except Exception:
-                self.lang = 'en'
+        self.lang = get_lang()
+        self.worker = None
         self.loaded_files = []
         self.headers_data = {}
+        self._headers_loaded_signal.connect(self._on_headers_loaded)
         self._init_ui()
         self._restore_options()
 
@@ -290,7 +289,7 @@ class HeaderEditorTab(QWidget):
             self.folder_input.setText(folder)
 
     def _load_headers(self):
-        """Load headers from files in the selected folder"""
+        """Load headers from files in the selected folder (non-blocking)"""
         self._save_options()
         folder = self.folder_input.text().strip()
         if not folder or not os.path.isdir(folder):
@@ -300,26 +299,39 @@ class HeaderEditorTab(QWidget):
             self.info_label.setText(self._tr("❌ Header editor module not available", "❌ Module éditeur headers non disponible"))
             return
 
-        # Scan for FITS/XISF files
-        self.loaded_files = []
-        for root, _, files in os.walk(folder):
-            for f in files:
-                if f.lower().endswith(('.fits', '.fit', '.xisf', '.fz')):
-                    self.loaded_files.append(os.path.join(root, f))
+        self.load_btn.setEnabled(False)
+        self.info_label.setText(self._tr("Scanning files...", "Recherche des fichiers..."))
+
+        def _do_scan():
+            found_files = []
+            for root, _, files in os.walk(folder):
+                for f in files:
+                    if f.lower().endswith(('.fits', '.fit', '.xisf', '.fz')):
+                        found_files.append(os.path.join(root, f))
+
+            headers_data = {}
+            if found_files:
+                try:
+                    ref_header = read_header(found_files[0])
+                    headers_data = ref_header if ref_header else {}
+                except Exception:
+                    headers_data = {}
+
+            self._headers_loaded_signal.emit(found_files, headers_data)
+
+        threading.Thread(target=_do_scan, daemon=True).start()
+
+    def _on_headers_loaded(self, found_files, headers_data):
+        """Handle headers loaded from background thread"""
+        self.load_btn.setEnabled(True)
+        self.loaded_files = found_files
+        self.headers_data = headers_data
 
         if not self.loaded_files:
             self.info_label.setText(self._tr("No FITS/XISF files found", "Aucun fichier FITS/XISF trouvé"))
             return
 
         self.info_label.setText(f"{len(self.loaded_files)} {self._tr('files loaded', 'fichiers chargés')}")
-
-        # Read first file headers as reference
-        try:
-            ref_header = read_header(self.loaded_files[0])
-            self.headers_data = ref_header if ref_header else {}
-        except Exception as e:
-            self.headers_data = {}
-
         self._populate_table()
 
     def _populate_table(self):

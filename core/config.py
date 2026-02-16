@@ -12,8 +12,8 @@ Supports YAML configuration files with defaults.
 import os
 import sys
 import yaml
-import psutil
 import platform
+import threading
 from pathlib import Path
 from typing import Dict, Any, Optional
 import logging
@@ -23,22 +23,34 @@ logger = logging.getLogger(__name__)
 # Default configuration paths
 CONFIG_DIR = Path.home() / '.astromanager'
 CONFIG_FILE = CONFIG_DIR / 'config.yaml'
-DEFAULT_CONFIG_FILE = Path(__file__).parent.parent / 'config' / 'default_config.yaml'
+if getattr(sys, 'frozen', False):
+    _BASE = Path(sys._MEIPASS)
+else:
+    _BASE = Path(__file__).parent.parent
+DEFAULT_CONFIG_FILE = _BASE / 'config' / 'default_config.yaml'
 
-# Ensure config directory exists
-CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+# Ensure config directory exists with restrictive permissions
+try:
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    if platform.system() != 'Windows':
+        os.chmod(str(CONFIG_DIR), 0o700)
+except OSError:
+    pass
 
 
 class ConfigManager:
     """Centralized configuration manager with system detection"""
 
     _instance = None
+    _lock = threading.Lock()
 
     def __new__(cls):
-        """Singleton pattern"""
+        """Thread-safe singleton pattern"""
         if cls._instance is None:
-            cls._instance = super().__new__(cls)
-            cls._instance._initialized = False
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
+                    cls._instance._initialized = False
         return cls._instance
 
     def __init__(self):
@@ -124,8 +136,7 @@ class ConfigManager:
                 'cache_duration_days': 365,
             },
             'bug_reporting': {
-                'enabled': True,
-                'endpoint_url': 'https://bugs.astromanager.io/report',
+                'enabled': False,
             },
             'ui': {
                 'window_width': 1200,
@@ -137,9 +148,16 @@ class ConfigManager:
 
     def _detect_system_capabilities(self):
         """Auto-detect system specs and optimize settings"""
-        cpu_count = psutil.cpu_count(logical=True)
-        cpu_physical = psutil.cpu_count(logical=False) or cpu_count
-        ram_gb = psutil.virtual_memory().total / (1024**3)
+        try:
+            import psutil
+            cpu_count = psutil.cpu_count(logical=True) or os.cpu_count() or 4
+            cpu_physical = psutil.cpu_count(logical=False) or cpu_count
+            ram_gb = psutil.virtual_memory().total / (1024**3)
+        except ImportError:
+            logger.warning("psutil not available, using fallback system detection")
+            cpu_count = os.cpu_count() or 4
+            cpu_physical = max(1, cpu_count // 2)
+            ram_gb = 8.0  # Conservative default
 
         # Detect storage type (SSD vs HDD)
         storage_type = self._detect_storage_type()
@@ -208,13 +226,12 @@ class ConfigManager:
             if platform.system() == 'Windows':
                 try:
                     import winreg
-                    key = winreg.OpenKey(
+                    with winreg.OpenKey(
                         winreg.HKEY_LOCAL_MACHINE,
                         r"HARDWARE\DESCRIPTION\System\CentralProcessor\0"
-                    )
-                    cpu_name, _ = winreg.QueryValueEx(key, "ProcessorNameString")
-                    winreg.CloseKey(key)
-                    return cpu_name.strip()
+                    ) as key:
+                        cpu_name, _ = winreg.QueryValueEx(key, "ProcessorNameString")
+                        return cpu_name.strip()
                 except Exception:
                     pass
             elif platform.system() == 'Linux':
@@ -398,8 +415,11 @@ class ConfigManager:
         """Detect SSD vs HDD on macOS for a given path."""
         try:
             import subprocess
+            real_path = os.path.realpath(path)
+            if not os.path.exists(real_path):
+                return 'ssd'
             result = subprocess.run(
-                ['diskutil', 'info', path],
+                ['diskutil', 'info', '--', real_path],
                 capture_output=True, text=True, timeout=5
             )
             if result.returncode == 0:
@@ -468,17 +488,19 @@ class ConfigManager:
         config = self.config
 
         for key in keys[:-1]:
-            if key not in config:
+            if key not in config or not isinstance(config.get(key), dict):
                 config[key] = {}
             config = config[key]
 
         config[keys[-1]] = value
 
     def save_config(self):
-        """Save current configuration to file"""
+        """Save current configuration to file with restrictive permissions"""
         try:
             with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
                 yaml.dump(self.config, f, default_flow_style=False, allow_unicode=True)
+            if platform.system() != 'Windows':
+                os.chmod(str(CONFIG_FILE), 0o600)
             logger.info(f"Configuration saved to {CONFIG_FILE}")
         except Exception as e:
             logger.error(f"Error saving config: {e}")
@@ -493,14 +515,14 @@ class ConfigManager:
     def get_batch_size(self) -> int:
         """Get optimal batch size"""
         batch_size = self.get('system.batch_size')
-        if batch_size:
+        if batch_size is not None:
             return batch_size
         return self.system_caps.get('batch_size', 1000)
 
     def get_cache_size(self) -> int:
         """Get optimal cache size"""
         cache_size = self.get('system.cache_size')
-        if cache_size:
+        if cache_size is not None:
             return cache_size
         return self.system_caps.get('cache_size', 5000)
 
@@ -511,10 +533,13 @@ class ConfigManager:
 
 # Global singleton instance
 _config_manager = None
+_config_lock = threading.Lock()
 
 def get_config() -> ConfigManager:
-    """Get global configuration manager instance"""
+    """Get global configuration manager instance (thread-safe)"""
     global _config_manager
     if _config_manager is None:
-        _config_manager = ConfigManager()
+        with _config_lock:
+            if _config_manager is None:
+                _config_manager = ConfigManager()
     return _config_manager

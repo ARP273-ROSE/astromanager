@@ -23,6 +23,11 @@ from PyQt6.QtGui import QColor, QFont
 from core.signals import signals
 from core.config import get_config
 from core.database import get_db
+from core.i18n import get_lang
+from gui.theme import prettify_filter_name
+
+import logging
+logger = logging.getLogger(__name__)
 
 
 class TargetTrackingTab(QWidget):
@@ -37,14 +42,7 @@ class TargetTrackingTab(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.config = get_config()
-        self.lang = self.config.get('application.language', 'auto')
-        if self.lang == 'auto':
-            import locale
-            try:
-                loc = locale.getdefaultlocale()[0]
-                self.lang = 'fr' if loc and loc.lower().startswith('fr') else 'en'
-            except Exception:
-                self.lang = 'en'
+        self.lang = get_lang()
         self.current_target = None
         self._last_analysis_results = None
         self._init_ui()
@@ -397,8 +395,7 @@ class TargetTrackingTab(QWidget):
 
         for i, obs in enumerate(observations):
             self.history_table.setItem(i, 0, QTableWidgetItem(str(obs.get('observation_date', ''))))
-            from gui.theme import prettify_filter_name as _pfn
-            self.history_table.setItem(i, 1, QTableWidgetItem(_pfn(str(obs.get('filter', '-')))))
+            self.history_table.setItem(i, 1, QTableWidgetItem(prettify_filter_name(str(obs.get('filter', '-')))))
 
             frames = obs.get('frame_count', 0) or 0
             self.history_table.setItem(i, 2, QTableWidgetItem(str(frames)))
@@ -448,8 +445,7 @@ class TargetTrackingTab(QWidget):
 
         self.filter_table.setRowCount(len(filters))
         for i, (fname, data) in enumerate(sorted(filters.items())):
-            from gui.theme import prettify_filter_name as _pfn
-            self.filter_table.setItem(i, 0, QTableWidgetItem(_pfn(fname)))
+            self.filter_table.setItem(i, 0, QTableWidgetItem(prettify_filter_name(fname)))
             self.filter_table.setItem(i, 1, QTableWidgetItem(str(data['frames'])))
 
             total_time = data['time']
@@ -595,7 +591,7 @@ class TargetTrackingTab(QWidget):
 
                 imported += 1
             except Exception as e:
-                print(f"  ⚠️ Error importing target '{target_name}': {e}")
+                logger.error(f"Error importing target '{target_name}': {e}")
                 continue
 
         if imported > 0:
@@ -626,7 +622,11 @@ class TargetTrackingTab(QWidget):
 
         def _do_resolve():
             try:
-                import fits_analyser_gui as fag
+                try:
+                    import fits_analyser_gui as fag
+                except ImportError:
+                    self._simbad_error_signal.emit("SIMBAD module not available (fits_analyser_gui not found)")
+                    return
                 if not getattr(fag, 'SIMBAD_AVAILABLE', False):
                     self._simbad_error_signal.emit(
                         self._tr("SIMBAD not available (install astroquery)",

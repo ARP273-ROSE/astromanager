@@ -10,9 +10,11 @@ complete flat sets, link targets to master flats, track PixInsight processing.
 import os
 import json
 import logging
+import platform
 from pathlib import Path
 from datetime import datetime, timedelta
 from collections import defaultdict
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import Dict, List, Optional, Any, Set, Tuple
 
 from .header_editor import (
@@ -115,50 +117,76 @@ class FlatManager:
                    progress_callback=None) -> int:
         """
         Scan a directory for flat frames and organize into groups.
+        Uses parallel header reading for performance.
         Returns number of flat files found.
         """
         all_files = scan_directory(folder, recursive=recursive,
                                     skip_calibration=False, skip_pixinsight=True)
-        
-        flat_count = 0
+
         total = len(all_files)
-        
-        for i, filepath in enumerate(all_files):
+        if total == 0:
+            return 0
+
+        # Phase 1: Read all headers in parallel
+        headers = {}
+        num_workers = min(os.cpu_count() or 4, total, 8)
+
+        if num_workers > 1 and total > 5:
+            with ProcessPoolExecutor(max_workers=num_workers) as executor:
+                futures = {executor.submit(read_header, fp): fp for fp in all_files}
+                for i, future in enumerate(as_completed(futures)):
+                    fp = futures[future]
+                    try:
+                        headers[fp] = future.result()
+                    except Exception as e:
+                        logger.debug(f"Failed to read flat: {fp}: {e}")
+                    if progress_callback:
+                        progress_callback(i + 1, total)
+        else:
+            for i, fp in enumerate(all_files):
+                try:
+                    headers[fp] = read_header(fp)
+                except Exception as e:
+                    logger.debug(f"Failed to read flat: {fp}: {e}")
+                if progress_callback:
+                    progress_callback(i + 1, total)
+
+        # Phase 2: Classify and group (fast, in-memory)
+        flat_count = 0
+        for filepath, header in headers.items():
+            filepath = os.path.normpath(filepath)
             try:
-                header = read_header(filepath)
-                
                 # Check if this is a flat frame
                 image_type = get_header_value(header, 'IMAGETYP')
                 if not image_type:
-                    # Try to detect from filename
                     if 'flat' in Path(filepath).name.lower():
                         image_type = 'FLAT'
                     else:
                         continue
-                
+
                 if 'FLAT' not in str(image_type).upper():
                     continue
-                
+
                 # Extract grouping attributes
                 date_obs = get_header_value(header, 'DATE-OBS')
                 date = self._extract_night_date(date_obs)
-                
+
                 telescope = str(get_header_value(header, 'TELESCOP') or 'Unknown').strip()
                 camera = str(get_header_value(header, 'INSTRUME') or 'Unknown').strip()
                 filter_name = str(get_header_value(header, 'FILTER') or 'Unknown').strip()
-                
+
                 bx = get_header_value(header, 'XBINNING') or 1
                 by = get_header_value(header, 'YBINNING') or 1
                 binning = f"{int(bx)}x{int(by)}"
-                
+
                 rotation = float(get_header_value(header, 'ROTATION') or 0)
-                
+
                 temp = get_header_value(header, 'CCD-TEMP')
-                
+
                 # Create or update group
                 fg = FlatGroup(date, telescope, camera, filter_name, binning, rotation)
                 key = fg.key
-                
+
                 if key in self.groups:
                     if filepath not in self.groups[key].files:
                         self.groups[key].files.append(filepath)
@@ -167,15 +195,12 @@ class FlatManager:
                     if temp is not None:
                         fg.temperature = float(temp)
                     self.groups[key] = fg
-                
+
                 flat_count += 1
-                
+
             except Exception as e:
-                logger.debug(f"Failed to read flat: {filepath}: {e}")
-            
-            if progress_callback:
-                progress_callback(i + 1, total)
-        
+                logger.debug(f"Failed to classify flat: {filepath}: {e}")
+
         return flat_count
     
     def _extract_night_date(self, date_obs: Any) -> str:
@@ -336,6 +361,8 @@ class FlatManager:
         os.makedirs(os.path.dirname(save_path) or '.', exist_ok=True)
         with open(save_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
+        if platform.system() != 'Windows':
+            os.chmod(save_path, 0o600)
     
     def load(self, path: Optional[str] = None):
         """Load flat database from JSON."""
@@ -348,8 +375,15 @@ class FlatManager:
                 data = json.load(f)
             
             for key, gdata in data.get('groups', {}).items():
-                self.groups[key] = FlatGroup.from_dict(gdata)
-            
+                try:
+                    self.groups[key] = FlatGroup.from_dict(gdata)
+                except (KeyError, TypeError, ValueError) as e:
+                    logger.warning(
+                        f"Skipping corrupt flat group '{key}': "
+                        f"missing or invalid fields in saved data ({e})"
+                    )
+                    continue
+
             logger.info(f"Loaded {len(self.groups)} flat groups from {load_path}")
         except Exception as e:
             logger.error(f"Failed to load flat database: {e}")

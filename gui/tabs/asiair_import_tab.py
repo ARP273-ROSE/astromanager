@@ -53,12 +53,8 @@ class ASIAIRImportTab(QWidget):
         self.config = get_config()
         self.lang = self.config.get('application.language', 'auto')
         if self.lang == 'auto':
-            import locale
-            try:
-                loc = locale.getdefaultlocale()[0]
-                self.lang = 'fr' if loc and loc.lower().startswith('fr') else 'en'
-            except Exception:
-                self.lang = 'en'
+            from core.i18n import get_lang
+            self.lang = get_lang()
 
         # Load user telescope/filter options from config
         self.telescope_options = self.config.get(
@@ -750,6 +746,7 @@ class ASIAIRImportTab(QWidget):
         self.console.clear()
         self.start_btn.setVisible(False)
         self.stop_btn.setVisible(True)
+        signals.busy_state_changed.emit(True)
 
         self.worker = UnifiedWorker()
         self.worker.output_signal.connect(
@@ -795,5 +792,7 @@ class ASIAIRImportTab(QWidget):
     def _on_finished(self, success, message, result):
         self.start_btn.setVisible(True)
         self.stop_btn.setVisible(False)
+        signals.busy_state_changed.emit(False)
         if success and result:
             signals.compression_completed.emit(result)
+        self.worker = None

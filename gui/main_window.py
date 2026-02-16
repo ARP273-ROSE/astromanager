@@ -9,6 +9,7 @@ console output, and progress tracking.
 ================================================================================
 """
 
+import html
 import sys
 import os
 import logging
@@ -54,6 +55,15 @@ class AstroManagerWindow(QMainWindow):
         self.setMinimumSize(900, 600)
         self.resize(1400, 900)
 
+        # Set window icon (also appears in title bar)
+        if getattr(sys, 'frozen', False):
+            _base = sys._MEIPASS
+        else:
+            _base = os.path.dirname(os.path.dirname(__file__))
+        icon_path = os.path.join(_base, 'assets', 'icon.ico')
+        if os.path.isfile(icon_path):
+            self.setWindowIcon(QIcon(icon_path))
+
         self._init_ui()
         self._init_menu()
         self._init_status_bar()
@@ -76,21 +86,8 @@ class AstroManagerWindow(QMainWindow):
 
     def _detect_language(self):
         """Auto-detect system language"""
-        import locale
-        try:
-            lang = locale.getdefaultlocale()[0]
-            if lang and lang.startswith('fr'):
-                return 'fr'
-        except Exception:
-            pass
-
-        # Check environment variables
-        for var in ['LANG', 'LANGUAGE', 'LC_ALL']:
-            val = os.environ.get(var, '')
-            if val.startswith('fr'):
-                return 'fr'
-
-        return 'en'
+        from core.i18n import get_lang
+        return get_lang()
 
     def _init_ui(self):
         """Initialize the main UI"""
@@ -368,14 +365,71 @@ class AstroManagerWindow(QMainWindow):
         self._download_done_signal.connect(self._on_download_done)
 
     def _init_bug_reporter(self):
-        """Initialize anonymous bug reporter"""
+        """Initialize anonymous bug reporter with crash dialog support"""
         try:
             from modules.bug_reporter import get_bug_reporter
             self.bug_reporter = get_bug_reporter(version=__version__)
+            self.bug_reporter.set_crash_callback(self._on_crash_report)
             self.bug_reporter.install_global_handler()
+            # Connect bug report signals
+            signals.bug_report_crash.connect(self._show_crash_dialog)
+            signals.bug_report_result.connect(self._on_report_result)
         except Exception as e:
             logger.warning(f"Bug reporter initialization failed: {e}")
             self.bug_reporter = None
+
+    def _on_crash_report(self, report):
+        """Crash callback — called from any thread. Emits thread-safe signal."""
+        try:
+            signals.bug_report_crash.emit(report)
+        except Exception:
+            pass
+
+    def _show_crash_dialog(self, report):
+        """Show crash report consent dialog (runs on main/GUI thread via signal)."""
+        try:
+            from gui.dialogs.bug_report_dialog import CrashReportDialog
+            dialog = CrashReportDialog(
+                report, self.bug_reporter, lang=self.lang, parent=self)
+            dialog.exec()
+            if dialog.was_sent():
+                self._send_report_async(report)
+            else:
+                report_id = report.get('report_id', '?')
+                self._log(self._tr(
+                    f"Crash report saved locally: {report_id}",
+                    f"Rapport de crash sauvegardé localement : {report_id}"
+                ))
+        except Exception as e:
+            logger.error(f"Failed to show crash dialog: {e}")
+
+    def _send_report_async(self, report):
+        """Send a report in a background thread, emit result signal."""
+        import threading as _threading
+
+        def _worker():
+            try:
+                report_id, was_sent = self.bug_reporter.send_report(report)
+                signals.bug_report_result.emit(was_sent, report_id or '?')
+            except Exception as e:
+                logger.error(f"Failed to send report: {e}")
+                signals.bug_report_result.emit(False, report.get('report_id', '?'))
+
+        t = _threading.Thread(target=_worker, daemon=True)
+        t.start()
+
+    def _on_report_result(self, was_sent, report_id):
+        """Handle bug report send result — update status bar."""
+        if was_sent:
+            self.status_bar.showMessage(self._tr(
+                f"Bug report sent: {report_id}",
+                f"Rapport de bug envoyé : {report_id}"
+            ), 8000)
+        else:
+            self.status_bar.showMessage(self._tr(
+                f"Bug report saved locally: {report_id}",
+                f"Rapport de bug sauvegardé localement : {report_id}"
+            ), 8000)
 
     # =========================================================================
     # Event Handlers
@@ -441,6 +495,7 @@ class AstroManagerWindow(QMainWindow):
         }
         color = color_map.get(level, COLORS['text_primary'])
         timestamp = datetime.now().strftime("%H:%M:%S")
+        text = html.escape(str(text))
         self.console.append(f'<span style="color:{COLORS["text_secondary"]}">[{timestamp}]</span> '
                            f'<span style="color:{color}">{text}</span>')
         self.console.moveCursor(QTextCursor.MoveOperation.End)
@@ -542,46 +597,21 @@ class AstroManagerWindow(QMainWindow):
         )
 
     def _show_bug_dialog(self):
-        """Open GitHub Issues with pre-filled system info."""
-        import platform
-        import urllib.parse
+        """Open in-app manual bug report dialog."""
+        if not self.bug_reporter:
+            QMessageBox.warning(self,
+                self._tr("Bug Report", "Rapport de Bug"),
+                self._tr("Bug reporter is not initialized.",
+                         "Le rapporteur de bugs n'est pas initialisé."))
+            return
 
-        # Collect system info for the issue body
-        sys_info = (
-            f"- **AstroManager:** v{__version__}\n"
-            f"- **OS:** {platform.system()} {platform.version()}\n"
-            f"- **Python:** {platform.python_version()}\n"
-            f"- **Architecture:** {platform.machine()}\n"
-        )
-        # Dependency versions
-        for mod_name in ('PyQt6', 'astropy', 'numpy', 'zstandard', 'lz4'):
-            try:
-                mod = __import__(mod_name)
-                ver = getattr(mod, '__version__', '?')
-                sys_info += f"- **{mod_name}:** {ver}\n"
-            except ImportError:
-                sys_info += f"- **{mod_name}:** not installed\n"
-
-        body = (
-            "## Description\n\n"
-            "<!-- Describe the bug / issue clearly -->\n\n\n"
-            "## Steps to Reproduce\n\n"
-            "1. \n2. \n3. \n\n"
-            "## Expected Behavior\n\n\n\n"
-            "## Actual Behavior\n\n\n\n"
-            "## System Info\n\n"
-            f"{sys_info}\n"
-            "## Screenshots / Logs\n\n"
-            "<!-- Paste any relevant screenshots or log output -->\n"
-        )
-
-        params = urllib.parse.urlencode({
-            'title': '[Bug] ',
-            'body': body,
-            'labels': 'bug',
-        })
-        url = f"https://github.com/ARP273-ROSE/astromanager/issues/new?{params}"
-        QDesktopServices.openUrl(QUrl(url))
+        from gui.dialogs.bug_report_dialog import ManualBugReportDialog
+        dialog = ManualBugReportDialog(
+            self.bug_reporter, lang=self.lang, parent=self)
+        dialog.exec()
+        if dialog.was_submitted():
+            report = dialog.get_report()
+            self._send_report_async(report)
 
     def _show_system_info(self):
         """Show system information dialog"""
@@ -598,16 +628,17 @@ class AstroManagerWindow(QMainWindow):
         cpu_name = info.get('cpu_name', '?')
         cpu_cores = f"{info.get('cpu_count_physical', '?')}P / {info.get('cpu_count_logical', '?')}L"
 
+        _esc = html.escape
         text = f"""<h3>{self._tr("System Information", "Informations Système")}</h3>
         <table>
-        <tr><td><b>OS:</b></td><td>{os_display}</td></tr>
-        <tr><td><b>CPU:</b></td><td>{cpu_name}</td></tr>
-        <tr><td><b>{self._tr("Cores:", "Coeurs :")}</b></td><td>{cpu_cores}</td></tr>
-        <tr><td><b>RAM:</b></td><td>{info.get('ram_gb', '?')} GB</td></tr>
-        <tr><td><b>Storage:</b></td><td>{info.get('storage_type', '?').upper()}</td></tr>
-        <tr><td><b>Python:</b></td><td>{info.get('python_version', '?')}</td></tr>
-        <tr><td><b>Workers:</b></td><td>{workers}</td></tr>
-        <tr><td><b>Batch Size:</b></td><td>{batch}</td></tr>
+        <tr><td><b>OS:</b></td><td>{_esc(str(os_display))}</td></tr>
+        <tr><td><b>CPU:</b></td><td>{_esc(str(cpu_name))}</td></tr>
+        <tr><td><b>{self._tr("Cores:", "Coeurs :")}</b></td><td>{_esc(str(cpu_cores))}</td></tr>
+        <tr><td><b>RAM:</b></td><td>{_esc(str(info.get('ram_gb', '?')))} GB</td></tr>
+        <tr><td><b>Storage:</b></td><td>{_esc(str(info.get('storage_type', '?')).upper())}</td></tr>
+        <tr><td><b>Python:</b></td><td>{_esc(str(info.get('python_version', '?')))}</td></tr>
+        <tr><td><b>Workers:</b></td><td>{_esc(str(workers))}</td></tr>
+        <tr><td><b>Batch Size:</b></td><td>{_esc(str(batch))}</td></tr>
         </table>"""
 
         QMessageBox.information(self,
@@ -739,8 +770,12 @@ class AstroManagerWindow(QMainWindow):
 
         def _worker():
             try:
+                url = release_info['download_url']
+                if not url.startswith('https://github.com/') and not url.startswith('https://api.github.com/'):
+                    self._update_error_signal.emit("Invalid download URL")
+                    return
                 from modules.updater import download_and_apply_update
-                download_and_apply_update(release_info['download_url'], app_dir)
+                download_and_apply_update(url, app_dir)
                 self._download_done_signal.emit(True, "")
             except Exception as e:
                 self._download_done_signal.emit(False, str(e))
@@ -1103,7 +1138,7 @@ class AstroManagerWindow(QMainWindow):
         bug_form = QFormLayout(bug_group)
 
         cb_bugs = QCheckBox()
-        cb_bugs.setChecked(self.config.get('bug_reporting.enabled', True))
+        cb_bugs.setChecked(self.config.get('bug_reporting.enabled', False))
         cb_bugs.setToolTip(self._tr("Send anonymous crash reports to help improve AstroManager", "Envoyer des rapports de crash anonymes pour améliorer AstroManager"))
         bug_form.addRow(self._tr("Enable:", "Activer:"), cb_bugs)
 
@@ -1229,6 +1264,14 @@ class AstroManagerWindow(QMainWindow):
                 <li><b>Analyse :</b> Répartition FITS/XISF/FZ et espace utilisé</li>
                 <li><b>Organisation :</b> Organiser les fichiers par type/date/cible avec des presets</li>
             </ul>
+            <h3>9. Exécutable Autonome (.exe)</h3>
+            <ul>
+                <li><b>Windows :</b> Lancez <code>build.bat</code> pour créer <code>dist\\AstroManager\\AstroManager.exe</code></li>
+                <li><b>Linux / macOS :</b> Lancez <code>./build.sh</code> pour créer <code>dist/AstroManager/AstroManager</code></li>
+                <li><b>Prérequis :</b> PyInstaller (<code>pip install pyinstaller</code>)</li>
+                <li><b>Données :</b> Configuration et base de données restent dans <code>~/.astromanager/</code></li>
+                <li><b>Multiplateforme :</b> Fonctionne sur Windows, Linux et macOS</li>
+            </ul>
             <h3>Raccourcis</h3>
             <p>Ctrl+, = Réglages | Ctrl+Q = Quitter | Ctrl+` = Console | F1 = Aide</p>
             """)
@@ -1289,6 +1332,14 @@ class AstroManagerWindow(QMainWindow):
             <ul>
                 <li><b>Analysis:</b> FITS/XISF/FZ breakdown and space usage</li>
                 <li><b>Organization:</b> Organize files by type/date/target with presets</li>
+            </ul>
+            <h3>9. Standalone Executable (.exe)</h3>
+            <ul>
+                <li><b>Windows:</b> Run <code>build.bat</code> to create <code>dist\\AstroManager\\AstroManager.exe</code></li>
+                <li><b>Linux / macOS:</b> Run <code>./build.sh</code> to create <code>dist/AstroManager/AstroManager</code></li>
+                <li><b>Prerequisite:</b> PyInstaller (<code>pip install pyinstaller</code>)</li>
+                <li><b>Data:</b> Configuration and database remain in <code>~/.astromanager/</code></li>
+                <li><b>Cross-platform:</b> Works on Windows, Linux, and macOS</li>
             </ul>
             <h3>Shortcuts</h3>
             <p>Ctrl+, = Settings | Ctrl+Q = Quit | Ctrl+` = Console | F1 = Help</p>
@@ -1369,6 +1420,15 @@ def create_application():
 
     app.setApplicationName("AstroManager")
     app.setApplicationVersion(__version__)
+
+    # Set application icon (taskbar + window)
+    if getattr(sys, 'frozen', False):
+        _base = sys._MEIPASS
+    else:
+        _base = os.path.dirname(os.path.dirname(__file__))
+    icon_path = os.path.join(_base, 'assets', 'icon.png')
+    if os.path.isfile(icon_path):
+        app.setWindowIcon(QIcon(icon_path))
 
     # Apply cosmic theme
     apply_cosmic_theme(app)

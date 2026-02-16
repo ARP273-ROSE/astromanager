@@ -58,6 +58,9 @@ class WeatherAPIClient:
         Returns:
             dict with weather data or None on failure
         """
+        if not (-90 <= latitude <= 90) or not (-180 <= longitude <= 180):
+            raise ValueError(f"Invalid coordinates: lat={latitude}, lon={longitude}")
+
         cached = self._get_cached(date_str, latitude, longitude)
         if cached:
             return cached
@@ -116,6 +119,9 @@ class WeatherAPIClient:
         Returns:
             List of nightly forecast dicts or None on failure
         """
+        if not (-90 <= latitude <= 90) or not (-180 <= longitude <= 180):
+            raise ValueError(f"Invalid coordinates: lat={latitude}, lon={longitude}")
+
         try:
             import urllib.request
             import urllib.parse
@@ -511,12 +517,17 @@ class WeatherAPIClient:
         if idx is None:
             return None
 
-        temperature = hourly.get('temperature_2m', [None])[idx]
-        cloud_cover = hourly.get('cloud_cover', [None])[idx]
-        precipitation = hourly.get('precipitation', [None])[idx]
-        wind_speed = hourly.get('wind_speed_10m', [None])[idx]
-        humidity = hourly.get('relative_humidity_2m', [None])[idx]
-        dew_point = hourly.get('dew_point_2m', [None])[idx]
+        def _safe_get(data_list, idx, default=None):
+            if data_list and idx is not None and idx < len(data_list):
+                return data_list[idx]
+            return default
+
+        temperature = _safe_get(hourly.get('temperature_2m'), idx)
+        cloud_cover = _safe_get(hourly.get('cloud_cover'), idx)
+        precipitation = _safe_get(hourly.get('precipitation'), idx)
+        wind_speed = _safe_get(hourly.get('wind_speed_10m'), idx)
+        humidity = _safe_get(hourly.get('relative_humidity_2m'), idx)
+        dew_point = _safe_get(hourly.get('dew_point_2m'), idx)
 
         classification = self._classify_weather(cloud_cover, precipitation)
         seeing_quality = self._estimate_seeing_quality(
@@ -547,7 +558,8 @@ class WeatherAPIClient:
             from core.database import get_db
             db = get_db()
             return db.get_weather(date_str, latitude, longitude)
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Cache operation failed: {e}")
             return None
 
     def _cache_result(self, date_str: str, latitude: float,
@@ -557,23 +569,56 @@ class WeatherAPIClient:
             from core.database import get_db
             db = get_db()
             db.cache_weather(date_str, latitude, longitude, weather)
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Cache operation failed: {e}")
             pass
 
     def fetch_batch(self, dates: List[str], latitude: float,
                     longitude: float,
                     progress_callback=None) -> Dict[str, Dict]:
-        """Fetch weather for multiple dates."""
+        """Fetch weather for multiple dates (parallelized with ThreadPoolExecutor)."""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
         results = {}
         total = len(dates)
+        if total == 0:
+            return results
 
-        for i, date_str in enumerate(dates):
-            if progress_callback:
-                progress_callback(i + 1, total)
+        # Separate cached vs uncached dates
+        uncached = []
+        for date_str in dates:
+            cached = self._get_cached(date_str, latitude, longitude)
+            if cached:
+                results[date_str] = cached
+            else:
+                uncached.append(date_str)
 
-            weather = self.fetch_weather_historical(date_str, latitude, longitude)
-            if weather:
-                results[date_str] = weather
+        # Report cached hits immediately
+        done_count = len(results)
+        if progress_callback and done_count > 0:
+            progress_callback(done_count, total)
+
+        if not uncached:
+            return results
+
+        # Parallel HTTP fetches for uncached dates (max 4 concurrent to be polite)
+        max_workers = min(4, len(uncached))
+
+        def _fetch_one(date_str):
+            return date_str, self.fetch_weather_historical(date_str, latitude, longitude)
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(_fetch_one, d): d for d in uncached}
+            for future in as_completed(futures):
+                try:
+                    date_str, weather = future.result()
+                    if weather:
+                        results[date_str] = weather
+                except Exception:
+                    pass
+                done_count += 1
+                if progress_callback:
+                    progress_callback(done_count, total)
 
         return results
 
