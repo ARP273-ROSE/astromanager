@@ -35,7 +35,8 @@ def worker_print(*args, **kwargs):
         capture.write(text + end)
     else:
         _original_stdout = sys.__stdout__ or sys.stdout
-        print(*args, file=_original_stdout, **kwargs)
+        if _original_stdout is not None:
+            print(*args, file=_original_stdout, **kwargs)
 
 
 class JobType(Enum):
@@ -428,8 +429,44 @@ class UnifiedWorker(QThread):
                 self._do_flush()
 
         capture = OutputCapture(self.output_signal)
-        # Use thread-local capture to avoid corrupting other threads' stdout
+        # Use thread-local capture for worker_print()
         _thread_local.output_capture = capture
+
+        # Also redirect sys.stdout so that regular print() calls from
+        # analysis code (fits_analyser_gui etc.) are captured in the GUI
+        # instead of going only to the terminal.
+        _original_stdout = sys.stdout
+
+        class _ThreadAwareStdout:
+            """Routes print() to the capture for the worker thread,
+            passes through to original stdout for all other threads."""
+            def __init__(self, worker_thread_id, capture_obj, fallback):
+                self._worker_tid = worker_thread_id
+                self._capture = capture_obj
+                self._fallback = fallback
+
+            def write(self, text):
+                if threading.current_thread().ident == self._worker_tid:
+                    return self._capture.write(text)
+                elif self._fallback is not None:
+                    return self._fallback.write(text)
+                return len(text) if text else 0
+
+            def flush(self):
+                if threading.current_thread().ident == self._worker_tid:
+                    self._capture.flush()
+                elif self._fallback is not None:
+                    self._fallback.flush()
+
+            # Forward attribute access (encoding, buffer, etc.) to fallback
+            def __getattr__(self, name):
+                if self._fallback is not None:
+                    return getattr(self._fallback, name)
+                raise AttributeError(name)
+
+        sys.stdout = _ThreadAwareStdout(
+            threading.current_thread().ident, capture, _original_stdout
+        )
 
         try:
             while self.jobs and not self.should_stop:
@@ -454,6 +491,7 @@ class UnifiedWorker(QThread):
         finally:
             capture.flush()
             _thread_local.output_capture = None
+            sys.stdout = _original_stdout
 
     def _dispatch_job(self, job: WorkerJob) -> Any:
         """Dispatch job to appropriate handler"""
