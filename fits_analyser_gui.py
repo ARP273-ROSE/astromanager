@@ -2661,6 +2661,13 @@ FAST_ANALYSIS = True  # Fast mode enabled
 ADU_SAMPLE_PER_FILTER = 0  # No advanced analysis in fast mode
 ADU_ANALYSIS_ENABLED = True  # New variable to control advanced analysis
 
+# Detect wrong file extensions via magic bytes
+DETECT_WRONG_EXTENSIONS = False
+# Collected extension mismatches during analysis (populated by _process_file_phase3)
+_EXTENSION_MISMATCHES = []
+import threading as _threading
+_EXTENSION_MISMATCHES_LOCK = _threading.Lock()
+
 # Path to calibration files (no personal default)
 BIAS_DARK_PATH = None
 
@@ -2995,8 +3002,12 @@ def get_file_signature(file_path):
         
         file_path_str = str(file_path).lower()
         header = None
-        
+
         # Read header based on file type
+        # NOTE: No magic-byte detection here — Phase 2 relies on its own
+        # fallback chains (XISF→manual→FITS, or FITS→getheader) which
+        # already handle misnamed files.  detect_true_format() is called
+        # only once per file, in _process_file_phase3, to record mismatches.
         if file_path_str.endswith('.xisf'):
             # Primary method: dedicated XISF → FITS-like converter (uses xisf library when available)
             if XISF_AVAILABLE:
@@ -3007,7 +3018,7 @@ def get_file_signature(file_path):
                 except Exception:
                     # Fall through to other strategies below
                     header = None
-            
+
             # Robust fallback: manual XISF parser (works even without xisf library)
             if header is None:
                 try:
@@ -3018,7 +3029,7 @@ def get_file_signature(file_path):
                         header = header_dict
                 except Exception:
                     header = None
-            
+
             # Last resort: try reading as FITS (for rare "FITS in .xisf" files)
             if header is None and ASTROPY_AVAILABLE:
                 try:
@@ -3856,19 +3867,31 @@ def get_best_header(hdul):
     
     return best_header
 
-def open_fits_for_data(file_path, header_only=False):
+def open_fits_for_data(file_path, header_only=False, force_format=None):
     """Opens a FITS file (including .fits.fz, .xifs, .xif) or XISF file choosing memmap according to header.
     If BZERO/BSCALE/BLANK are present, uses memmap=False (required by astropy).
     Returns an HDUList ready for .data and .header reading.
-    
+
     Args:
         file_path: Path to the FITS or XISF file
         header_only: If True, for XISF files, skip reading image data for faster header-only access
+        force_format: If 'xisf', open as XISF regardless of extension.
+                      If 'fits', open as FITS regardless of extension.
+                      If None (default), determine format from file extension.
     """
     file_path_str = str(file_path).lower()
-    
-    # Handle XISF files (.xisf only - .xifs/.xif are treated as FITS files)
-    if file_path_str.endswith('.xisf'):
+
+    # Determine whether to open as XISF
+    open_as_xisf = False
+    if force_format == 'xisf':
+        open_as_xisf = True
+    elif force_format == 'fits':
+        open_as_xisf = False
+    elif file_path_str.endswith('.xisf'):
+        open_as_xisf = True
+
+    # Handle XISF files
+    if open_as_xisf:
         try:
             return open_xisf_file(file_path, header_only=header_only)
         except Exception as e:
@@ -7824,32 +7847,124 @@ def calculate_adu_statistics_by_filter(data_by_target):
     
     return data_by_target
 
-def extract_fits_header_info_fast(file_path):
+def detect_true_format(file_path):
+    """Detect the true file format by reading magic bytes (first 10 bytes).
+
+    Returns:
+        'xisf' if file starts with XISF0100 signature
+        'fits' if file starts with SIMPLE  = (FITS) or \\x1f\\x8b (gzip/fpack)
+        None if format cannot be determined
+    """
+    try:
+        with open(str(file_path), 'rb') as f:
+            magic = f.read(10)
+        if len(magic) < 2:
+            return None
+        # XISF signature: "XISF0100"
+        if magic[:8] == b'XISF0100':
+            return 'xisf'
+        # FITS signature: "SIMPLE  ="
+        if magic[:9] == b'SIMPLE  =':
+            return 'fits'
+        # Gzip (fpack compressed FITS): 0x1f 0x8b
+        if magic[:2] == b'\x1f\x8b':
+            return 'fits'
+        return None
+    except (OSError, IOError):
+        return None
+
+
+def _get_extension_format(file_path):
+    """Return the format implied by the file extension.
+
+    Returns 'xisf', 'fits', or None.
+    """
+    file_lower = str(file_path).lower()
+    if file_lower.endswith('.xisf'):
+        return 'xisf'
+    if file_lower.endswith(('.fits', '.fit', '.fits.fz', '.fz', '.xifs', '.xif')):
+        return 'fits'
+    return None
+
+
+def _record_extension_mismatch(file_path, extension_format, true_format):
+    """Thread-safe recording of an extension mismatch."""
+    global _EXTENSION_MISMATCHES
+
+    file_str = str(file_path)
+    file_lower = file_str.lower()
+    # Handle multi-suffix extensions like .fits.fz
+    if file_lower.endswith('.fits.fz'):
+        ext = '.fits.fz'
+    elif '.' in file_str:
+        ext = '.' + file_str.rsplit('.', 1)[-1]
+    else:
+        ext = ''
+    suggested_ext = '.xisf' if true_format == 'xisf' else '.fits'
+
+    entry = {
+        'path': file_str,
+        'current_extension': ext,
+        'true_format': true_format,
+        'suggested_extension': suggested_ext,
+    }
+    with _EXTENSION_MISMATCHES_LOCK:
+        _EXTENSION_MISMATCHES.append(entry)
+
+
+def get_extension_mismatches():
+    """Return the list of collected extension mismatches and clear it."""
+    global _EXTENSION_MISMATCHES
+    result = list(_EXTENSION_MISMATCHES)
+    _EXTENSION_MISMATCHES = []
+    return result
+
+
+def extract_fits_header_info_fast(file_path, force_format=None):
     """Ultra-fast extraction of basic FITS header info for Phase 1 (optimized for speed)
     Uses fits.getheader() which only reads the header without loading the entire file.
+
+    Args:
+        file_path: Path to the file
+        force_format: If 'xisf' or 'fits', route to that reader directly instead
+                      of guessing from the extension.  Passed by _process_file_phase3
+                      when the true format has already been detected via magic bytes.
     """
     try:
         file_path_str = str(file_path).lower()
-        
-        # For XISF and related compressed formats (.xisf, .xifs, .xif), use full open method
-        # These may not work correctly with getheader() and need special handling
-        if file_path_str.endswith(('.xisf', '.xifs', '.xif')):
-            with open_fits_for_data(file_path, header_only=True) as hdul:
+
+        # Determine how to open the file.
+        # .xifs and .xif are FITS files with non-standard extensions (NOT XISF).
+        if force_format == 'xisf':
+            open_as_xisf = True
+        elif force_format == 'fits':
+            open_as_xisf = False
+        else:
+            # Default: only .xisf is XISF; .xifs/.xif are treated as FITS
+            open_as_xisf = file_path_str.endswith('.xisf')
+
+        if open_as_xisf:
+            with open_fits_for_data(file_path, header_only=True, force_format='xisf') as hdul:
+                header = get_best_header(hdul)
+                if header is None:
+                    header = hdul[0].header
+        elif force_format == 'fits' and file_path_str.endswith('.xisf'):
+            # File has .xisf extension but caller knows it's actually FITS
+            with open_fits_for_data(file_path, header_only=True, force_format='fits') as hdul:
                 header = get_best_header(hdul)
                 if header is None:
                     header = hdul[0].header
         else:
-            # For FITS files (.fits, .fit, .fits.fz), use getheader() for speed
-            # This is MUCH faster than opening the entire file
+            # Standard FITS path (.fits, .fit, .fits.fz) - use getheader() for speed
             try:
                 # Try primary header first (most common case)
                 header = fits.getheader(file_path, ext=0)
-                
+
                 # For .fits.fz files, metadata is often in extension 1
                 # Check if primary header has essential keys, if not try extension 1
                 essential_keys = ['EXPTIME', 'EXPOSURE', 'IMAGETYP', 'FILTER', 'INSTRUME', 'TELESCOP']
                 has_essential = any(key in header for key in essential_keys)
-                
+
                 if not has_essential and len(header) < 20:
                     # Try extension 1 (common for compressed FITS)
                     try:
@@ -7958,7 +8073,7 @@ def extract_fits_header_info_fast(file_path):
                 'date_obs': header.get('DATE-OBS', 'Unknown')
             }
         }
-            
+
     except Exception as e:
         return None
 
@@ -9133,16 +9248,28 @@ def process_file_info(info, file, data_by_target, global_data, is_adu_sample=Fal
 
 def _process_file_phase3(file):
     """Process single file for Phase 3 (parallelizable)
-    
+
     Uses cached header info from Phase 2 (signature reading) if available,
     otherwise reads the header directly.
-    
+
     Filters out calibration frames (FLAT, DARK, BIAS) using the cached type.
     """
     try:
+        # Detect extension mismatches (single 10-byte read per file).
+        # This MUST run before the cache shortcut, otherwise cached files
+        # would never be checked.  The detected true_fmt is also reused
+        # below as force_format for extract_fits_header_info_fast (cache
+        # miss path), so the file is opened only ONCE for detection.
+        _detected_true_fmt = None
+        if DETECT_WRONG_EXTENSIONS:
+            _detected_true_fmt = detect_true_format(file)
+            ext_fmt = _get_extension_format(file)
+            if _detected_true_fmt and ext_fmt and _detected_true_fmt != ext_fmt:
+                _record_extension_mismatch(file, ext_fmt, _detected_true_fmt)
+
         # Check if we have cached info from the signature reading phase
         cached_info = get_cached_header_info(file)
-        
+
         if cached_info:
             # Use cached info - much faster!
             # Check for calibration frames using cached type
@@ -9181,8 +9308,10 @@ def _process_file_phase3(file):
             }
         
         # Fallback: read header directly (slower but complete)
-        basic_info = extract_fits_header_info_fast(file)
-        
+        # Pass the already-detected true format so extract_fits_header_info_fast
+        # doesn't need to re-open the file for magic byte detection.
+        basic_info = extract_fits_header_info_fast(file, force_format=_detected_true_fmt)
+
         # If fast extraction fails for XISF, try reading as FITS (misnamed file)
         if basic_info is None and str(file).lower().endswith(('.xisf', '.xifs', '.xif')):
             try:
@@ -9632,8 +9761,17 @@ def analyze_folder_recursive(root_folder, workers=1, check_abort=None):
             # Report progress to GUI
             report_progress(processed_count, total_files_for_phase3, "phase3")
             
+            # Detect extension mismatches (sequential path)
+            _seq_force_fmt = None
+            if DETECT_WRONG_EXTENSIONS:
+                _seq_true_fmt = detect_true_format(file)
+                _seq_ext_fmt = _get_extension_format(file)
+                if _seq_true_fmt and _seq_ext_fmt and _seq_true_fmt != _seq_ext_fmt:
+                    _record_extension_mismatch(file, _seq_ext_fmt, _seq_true_fmt)
+                _seq_force_fmt = _seq_true_fmt  # may be None if detection failed
+
             # Extract basic info to identify target and filter (optimized for Phase 1)
-            basic_info = extract_fits_header_info_fast(file)
+            basic_info = extract_fits_header_info_fast(file, force_format=_seq_force_fmt)
             if basic_info and basic_info['type'] not in ['FLAT', 'DARK', 'BIAS'] and 'FLATWIZARD' not in str(basic_info['info']['instrument']).upper():
                 # Ensure filter is set (use appropriate default based on context)
                 if not basic_info['filter'] or basic_info['filter'] == 'Unknown':
