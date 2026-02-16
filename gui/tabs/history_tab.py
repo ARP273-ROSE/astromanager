@@ -207,6 +207,15 @@ class HistoryTab(QWidget):
         self.import_csv_btn.clicked.connect(self._import_csv)
         top_bar.addWidget(self.import_csv_btn)
 
+        self.clear_all_btn = QPushButton(self._tr("🗑 Clear All", "🗑 Tout Effacer"))
+        self.clear_all_btn.setToolTip(self._tr(
+            "Delete all observation history (targets and sessions)",
+            "Supprimer tout l'historique d'observations (cibles et sessions)"
+        ))
+        self.clear_all_btn.setStyleSheet("QPushButton { color: #ff6666; }")
+        self.clear_all_btn.clicked.connect(self._clear_all_history)
+        top_bar.addWidget(self.clear_all_btn)
+
         layout.addLayout(top_bar)
 
         # ── Summary Cards ──
@@ -285,8 +294,24 @@ class HistoryTab(QWidget):
         self.target_table.setAlternatingRowColors(True)
         self.target_table.setSelectionBehavior(
             QAbstractItemView.SelectionBehavior.SelectRows)
+        self.target_table.setSelectionMode(
+            QAbstractItemView.SelectionMode.ExtendedSelection)
         self.target_table.setSortingEnabled(True)
         layout.addWidget(self.target_table)
+
+        # Action buttons under the table
+        btn_bar = QHBoxLayout()
+        btn_bar.addStretch()
+        self.delete_target_btn = QPushButton(self._tr(
+            "🗑 Delete Selected Targets", "🗑 Supprimer les Cibles Sélectionnées"))
+        self.delete_target_btn.setToolTip(self._tr(
+            "Delete selected targets and all their observations",
+            "Supprimer les cibles sélectionnées et toutes leurs observations"
+        ))
+        self.delete_target_btn.setStyleSheet("QPushButton { color: #ff6666; }")
+        self.delete_target_btn.clicked.connect(self._delete_selected_targets)
+        btn_bar.addWidget(self.delete_target_btn)
+        layout.addLayout(btn_bar)
 
         self.sub_tabs.addTab(tab, self._tr("🎯 Target Rankings", "🎯 Classement Cibles"))
 
@@ -524,7 +549,10 @@ class HistoryTab(QWidget):
 
             for i, r in enumerate(rankings):
                 name = r.get('canonical_name') or r.get('name', '-')
-                self.target_table.setItem(i, 0, QTableWidgetItem(name))
+                name_item = QTableWidgetItem(name)
+                # Store target_id for deletion
+                name_item.setData(Qt.ItemDataRole.UserRole + 1, r.get('id'))
+                self.target_table.setItem(i, 0, name_item)
 
                 # Translate SIMBAD otype code to readable label
                 raw_type = r.get('object_type') or ''
@@ -1085,3 +1113,107 @@ class HistoryTab(QWidget):
             QMessageBox.warning(self,
                 self._tr("Import Error", "Erreur d'Import"),
                 str(e))
+
+    # =========================================================================
+    # Delete / Clear Actions
+    # =========================================================================
+
+    def _delete_selected_targets(self):
+        """Delete selected targets and all their observations."""
+        selected_rows = self.target_table.selectionModel().selectedRows()
+        if not selected_rows:
+            QMessageBox.information(self,
+                self._tr("Info", "Info"),
+                self._tr(
+                    "Select one or more targets in the table first.",
+                    "Sélectionnez d'abord une ou plusieurs cibles dans le tableau."
+                ))
+            return
+
+        # Collect target names and IDs
+        targets_to_delete = []
+        for idx in selected_rows:
+            row = idx.row()
+            name_item = self.target_table.item(row, 0)
+            if name_item:
+                target_id = name_item.data(Qt.ItemDataRole.UserRole + 1)
+                name = name_item.text()
+                if target_id is not None:
+                    targets_to_delete.append((target_id, name))
+
+        if not targets_to_delete:
+            return
+
+        names_preview = '\n'.join(f"  - {name}" for _, name in targets_to_delete[:10])
+        if len(targets_to_delete) > 10:
+            names_preview += f"\n  ... (+{len(targets_to_delete) - 10})"
+
+        reply = QMessageBox.warning(self,
+            self._tr("Confirm Deletion", "Confirmer la Suppression"),
+            self._tr(
+                f"Delete {len(targets_to_delete)} target(s) and ALL their observations?\n\n"
+                f"{names_preview}\n\nThis cannot be undone.",
+                f"Supprimer {len(targets_to_delete)} cible(s) et TOUTES leurs observations ?\n\n"
+                f"{names_preview}\n\nCette action est irréversible."
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        try:
+            from core.database import get_db
+            db = get_db()
+            for target_id, _ in targets_to_delete:
+                db.delete_target(target_id)
+            self.refresh_all()
+            signals.targets_refreshed.emit()
+        except Exception as e:
+            QMessageBox.warning(self,
+                self._tr("Error", "Erreur"), str(e))
+
+    def _clear_all_history(self):
+        """Delete all observation history."""
+        reply = QMessageBox.warning(self,
+            self._tr("Confirm Clear All", "Confirmer la Suppression Totale"),
+            self._tr(
+                "This will permanently delete ALL targets and ALL observations.\n\n"
+                "This cannot be undone. Continue?",
+                "Ceci supprimera définitivement TOUTES les cibles et TOUTES les observations.\n\n"
+                "Cette action est irréversible. Continuer ?"
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        # Double confirmation for destructive action
+        reply2 = QMessageBox.warning(self,
+            self._tr("Are you sure?", "Êtes-vous sûr ?"),
+            self._tr(
+                "Really delete everything? Last chance!",
+                "Vraiment tout supprimer ? Dernière chance !"
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        if reply2 != QMessageBox.StandardButton.Yes:
+            return
+
+        try:
+            from core.database import get_db
+            db = get_db()
+            db.delete_all_history()
+            self.refresh_all()
+            signals.targets_refreshed.emit()
+            QMessageBox.information(self,
+                self._tr("Done", "Terminé"),
+                self._tr(
+                    "All observation history has been cleared.",
+                    "Tout l'historique d'observations a été effacé."
+                ))
+        except Exception as e:
+            QMessageBox.warning(self,
+                self._tr("Error", "Erreur"), str(e))

@@ -463,6 +463,20 @@ class DatabaseManager:
             """, (target_id,))
             return [dict(row) for row in cursor.fetchall()]
 
+    def delete_target(self, target_id: int):
+        """Delete a target and all its observations (CASCADE)."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM observations WHERE target_id = ?", (target_id,))
+            cursor.execute("DELETE FROM targets WHERE id = ?", (target_id,))
+
+    def delete_all_history(self):
+        """Delete all observations and targets."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM observations")
+            cursor.execute("DELETE FROM targets")
+
     # =========================================================================
     # Weather Cache
     # =========================================================================
