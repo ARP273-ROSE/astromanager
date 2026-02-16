@@ -553,6 +553,8 @@ class TargetTrackingTab(QWidget):
                 camera_str = ', '.join(sorted(instruments)) if isinstance(instruments, (set, frozenset)) else str(instruments or '')
                 setup_str = f"{telescope_str} + {camera_str}" if telescope_str and camera_str else telescope_str or camera_str or ''
 
+                # Collect rows, then DELETE+INSERT in a single transaction
+                obs_rows = []
                 for date, date_data in files_by_date.items():
                     time_by_filter = date_data.get('time_by_filter', {})
                     for filter_name, exposures in time_by_filter.items():
@@ -563,10 +565,12 @@ class TargetTrackingTab(QWidget):
                         obs_date = str(date)[:10] if date else ''
                         if not obs_date:
                             continue
+                        obs_rows.append((obs_date, filter_name, total_exp, frame_count))
 
-                        # Dedup: delete matching observation before insert
-                        with db.get_connection() as conn:
-                            cursor = conn.cursor()
+                if obs_rows:
+                    with db.get_connection() as conn:
+                        cursor = conn.cursor()
+                        for obs_date, filter_name, total_exp, frame_count in obs_rows:
                             cursor.execute("""
                                 DELETE FROM observations
                                 WHERE target_id = ?
@@ -576,18 +580,16 @@ class TargetTrackingTab(QWidget):
                                   AND COALESCE(camera, '') = ?
                             """, (target_id, obs_date, filter_name or '',
                                   telescope_str or '', camera_str or ''))
-
-                        db.add_observation(
-                            target_id=target_id,
-                            observation_date=obs_date,
-                            filter_name=filter_name,
-                            exposure_time=total_exp,
-                            frame_count=frame_count,
-                            setup=setup_str,
-                            telescope=telescope_str,
-                            camera=camera_str,
-                        )
-                        obs_count += 1
+                        for obs_date, filter_name, total_exp, frame_count in obs_rows:
+                            cursor.execute("""
+                                INSERT INTO observations (
+                                    target_id, observation_date, filter, exposure_time,
+                                    frame_count, setup, telescope, camera
+                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            """, (target_id, obs_date, filter_name, total_exp,
+                                  frame_count, setup_str, telescope_str, camera_str))
+                            obs_count += 1
+                    db.update_target_stats(target_id)
 
                 imported += 1
             except Exception as e:
