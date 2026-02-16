@@ -18,7 +18,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -57,7 +57,7 @@ jobs:
           git push origin "v${{ steps.version.outputs.new }}"
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@c95fe1c8d4571e2c3b57f46ee5a4d4b6bec5aeb9 # v2.2.1
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: "v${{ steps.version.outputs.new }}"
           name: "v${{ steps.version.outputs.new }}"
