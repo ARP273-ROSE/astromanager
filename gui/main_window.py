@@ -12,6 +12,7 @@ console output, and progress tracking.
 import sys
 import os
 import logging
+import threading
 from datetime import datetime
 
 from PyQt6.QtWidgets import (
@@ -23,7 +24,7 @@ from PyQt6.QtWidgets import (
     QGroupBox, QFormLayout, QSpinBox, QDoubleSpinBox,
     QLineEdit, QCheckBox, QComboBox, QScrollArea
 )
-from PyQt6.QtCore import Qt, QTimer, QUrl
+from PyQt6.QtCore import Qt, QTimer, QUrl, QProcess, pyqtSignal
 from PyQt6.QtGui import QFont, QTextCursor, QAction, QIcon, QDesktopServices
 
 from core.config import get_config
@@ -37,6 +38,10 @@ from core import __version__
 
 class AstroManagerWindow(QMainWindow):
     """Main application window"""
+
+    _update_result_signal = pyqtSignal(object)
+    _update_error_signal = pyqtSignal(str)
+    _download_done_signal = pyqtSignal(bool, str)
 
     def __init__(self):
         super().__init__()
@@ -311,6 +316,10 @@ class AstroManagerWindow(QMainWindow):
         sysinfo_action.triggered.connect(self._show_system_info)
         help_menu.addAction(sysinfo_action)
 
+        update_action = QAction(self._tr("🔄 Check for Updates...", "🔄 Vérifier les mises à jour..."), self)
+        update_action.triggered.connect(self._check_for_updates)
+        help_menu.addAction(update_action)
+
         bug_action = QAction(self._tr("Report &Bug", "Signaler &Bug"), self)
         bug_action.triggered.connect(self._show_bug_dialog)
         help_menu.addAction(bug_action)
@@ -352,6 +361,11 @@ class AstroManagerWindow(QMainWindow):
         # Analysis signals
         signals.analysis_progress.connect(self._on_progress)
         signals.analysis_completed.connect(self._on_analysis_completed)
+
+        # Update signals (thread-safe)
+        self._update_result_signal.connect(self._on_update_result)
+        self._update_error_signal.connect(self._on_update_error)
+        self._download_done_signal.connect(self._on_download_done)
 
     def _init_bug_reporter(self):
         """Initialize anonymous bug reporter"""
@@ -599,6 +613,162 @@ class AstroManagerWindow(QMainWindow):
         QMessageBox.information(self,
             self._tr("System Info", "Info Système"), text)
 
+    # =========================================================================
+    # Update System
+    # =========================================================================
+
+    def _check_for_updates(self, silent=False):
+        """Check for updates via GitHub Releases API"""
+        self._update_silent = silent
+
+        def _worker():
+            try:
+                from modules.updater import check_for_update
+                result = check_for_update(__version__)
+                self._update_result_signal.emit(result)
+            except Exception as e:
+                self._update_error_signal.emit(str(e))
+
+        t = threading.Thread(target=_worker, daemon=True)
+        t.start()
+
+    def _on_update_result(self, result):
+        """Handle update check result (called on main thread via signal)"""
+        if result is not None:
+            if self._update_silent:
+                msg = self._tr(
+                    f"AstroManager v{result['version']} available — Help > Check for Updates",
+                    f"AstroManager v{result['version']} disponible — Aide > Vérifier les mises à jour"
+                )
+                self.status_bar.showMessage(msg, 15000)
+            else:
+                self._show_update_dialog(result)
+        else:
+            if not self._update_silent:
+                QMessageBox.information(self,
+                    self._tr("Updates", "Mises à jour"),
+                    self._tr(
+                        f"You are up to date (v{__version__}).",
+                        f"Vous êtes à jour (v{__version__})."
+                    ))
+
+    def _on_update_error(self, message):
+        """Handle update check error"""
+        if not self._update_silent:
+            QMessageBox.warning(self,
+                self._tr("Update Check Failed", "Vérification échouée"),
+                self._tr(
+                    f"Could not check for updates:\n{message}",
+                    f"Impossible de vérifier les mises à jour :\n{message}"
+                ))
+
+    def _show_update_dialog(self, release_info):
+        """Show update available dialog with changelog"""
+        from modules.updater import get_changelog
+
+        changelog = get_changelog(release_info)
+        date = release_info.get('date', '')[:10]
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle(self._tr("Update Available", "Mise à jour disponible"))
+        dialog.setMinimumSize(500, 350)
+        layout = QVBoxLayout(dialog)
+
+        header = QLabel(self._tr(
+            f"<h3>AstroManager v{release_info['version']} is available!</h3>"
+            f"<p>Current version: v{__version__} → New version: v{release_info['version']}"
+            f"{' (' + date + ')' if date else ''}</p>",
+            f"<h3>AstroManager v{release_info['version']} est disponible !</h3>"
+            f"<p>Version actuelle : v{__version__} → Nouvelle version : v{release_info['version']}"
+            f"{' (' + date + ')' if date else ''}</p>"
+        ))
+        header.setWordWrap(True)
+        layout.addWidget(header)
+
+        if changelog:
+            changelog_label = QLabel(self._tr("Changelog:", "Notes de version :"))
+            changelog_label.setStyleSheet("font-weight: bold;")
+            layout.addWidget(changelog_label)
+
+            changelog_text = QTextEdit()
+            changelog_text.setReadOnly(True)
+            changelog_text.setPlainText(changelog)
+            changelog_text.setMaximumHeight(180)
+            layout.addWidget(changelog_text)
+
+        btn_layout = QHBoxLayout()
+
+        install_btn = QPushButton(self._tr(
+            "Download and Install", "Télécharger et installer"))
+        install_btn.setStyleSheet(
+            f"background-color: {COLORS['accent_cyan']}; color: white; "
+            f"font-weight: bold; padding: 6px 16px;")
+
+        github_btn = QPushButton(self._tr("View on GitHub", "Voir sur GitHub"))
+        later_btn = QPushButton(self._tr("Later", "Plus tard"))
+
+        btn_layout.addWidget(install_btn)
+        btn_layout.addWidget(github_btn)
+        btn_layout.addWidget(later_btn)
+        layout.addLayout(btn_layout)
+
+        install_btn.clicked.connect(lambda: (dialog.accept(), self._do_update(release_info)))
+        github_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(release_info['url'])))
+        later_btn.clicked.connect(dialog.reject)
+
+        dialog.exec()
+
+    def _do_update(self, release_info):
+        """Download and apply update"""
+        reply = QMessageBox.question(self,
+            self._tr("Update", "Mise à jour"),
+            self._tr(
+                "The application will restart after the update.\nContinue?",
+                "L'application va redémarrer après la mise à jour.\nContinuer?"
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        self.status_bar.showMessage(self._tr(
+            "Downloading update...", "Téléchargement de la mise à jour..."))
+
+        app_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+        def _worker():
+            try:
+                from modules.updater import download_and_apply_update
+                download_and_apply_update(release_info['download_url'], app_dir)
+                self._download_done_signal.emit(True, "")
+            except Exception as e:
+                self._download_done_signal.emit(False, str(e))
+
+        t = threading.Thread(target=_worker, daemon=True)
+        t.start()
+
+    def _on_download_done(self, success, message):
+        """Handle download completion"""
+        if success:
+            QMessageBox.information(self,
+                self._tr("Update Installed", "Mise à jour installée"),
+                self._tr(
+                    "Update installed successfully. The application will now restart.",
+                    "Mise à jour installée avec succès. L'application va redémarrer."
+                ))
+            app_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            QProcess.startDetached(sys.executable, [os.path.join(app_dir, 'astromanager.py')])
+            QApplication.quit()
+        else:
+            self.status_bar.showMessage("")
+            QMessageBox.critical(self,
+                self._tr("Update Failed", "Mise à jour échouée"),
+                self._tr(
+                    f"Update failed:\n{message}",
+                    f"La mise à jour a échoué :\n{message}"
+                ))
+
     def _show_settings(self):
         """Show settings dialog with all configurable options"""
         dialog = QDialog(self)
@@ -625,6 +795,13 @@ class AstroManagerWindow(QMainWindow):
                 lang_combo.setCurrentIndex(i)
         lang_combo.setToolTip(self._tr("Application display language", "Langue d'affichage de l'application"))
         gen_form.addRow(self._tr("Language:", "Langue:"), lang_combo)
+
+        cb_updates = QCheckBox()
+        cb_updates.setChecked(self.config.get('application.check_updates_on_startup', True))
+        cb_updates.setToolTip(self._tr(
+            "Automatically check for updates when the application starts",
+            "Vérifier automatiquement les mises à jour au démarrage de l'application"))
+        gen_form.addRow(self._tr("Check updates on startup:", "Vérifier mises à jour au démarrage:"), cb_updates)
 
         layout.addWidget(gen_group)
 
@@ -945,6 +1122,7 @@ class AstroManagerWindow(QMainWindow):
         if dialog.exec() == QDialog.DialogCode.Accepted:
             # Save all settings
             self.config.set('application.language', lang_combo.currentData())
+            self.config.set('application.check_updates_on_startup', cb_updates.isChecked())
             self.config.set('observatory.latitude', lat_spin.value())
             self.config.set('observatory.longitude', lon_spin.value())
             self.config.set('observatory.elevation_m', elev_spin.value())
@@ -1203,6 +1381,7 @@ def main():
     app = create_application()
 
     # Initialize core services
+    config = None
     try:
         from core.config import get_config
         from core.database import get_db
@@ -1214,6 +1393,10 @@ def main():
 
     window = AstroManagerWindow()
     window.show()
+
+    # Auto-check for updates after a delay (let the UI load first)
+    if config and config.get('application.check_updates_on_startup', True):
+        QTimer.singleShot(3000, lambda: window._check_for_updates(silent=True))
 
     return app.exec()
 

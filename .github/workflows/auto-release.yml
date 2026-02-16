@@ -1,0 +1,53 @@
+name: Auto Release
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  release:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Read current version
+        id: version
+        run: |
+          CURRENT=$(grep -oP "(?<=__version__ = ')[^']+" core/__init__.py)
+          echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
+
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+          PATCH=$((PATCH + 1))
+          NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+          echo "new=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Bump version in core/__init__.py
+        run: |
+          sed -i "s/__version__ = '.*'/__version__ = '${{ steps.version.outputs.new }}'/" core/__init__.py
+
+      - name: Commit version bump
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add core/__init__.py
+          git commit -m "Bump version to ${{ steps.version.outputs.new }} [skip ci]"
+          git push
+
+      - name: Create tag
+        run: |
+          git tag "v${{ steps.version.outputs.new }}"
+          git push origin "v${{ steps.version.outputs.new }}"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "v${{ steps.version.outputs.new }}"
+          name: "v${{ steps.version.outputs.new }}"
+          generate_release_notes: true
