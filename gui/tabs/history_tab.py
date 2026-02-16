@@ -11,6 +11,7 @@ with export/import functionality and auto-save support.
 
 import json
 import logging
+import threading
 from datetime import datetime
 
 from PyQt6.QtWidgets import (
@@ -20,11 +21,12 @@ from PyQt6.QtWidgets import (
     QMessageBox, QFileDialog, QFrame, QGridLayout,
     QComboBox, QScrollArea, QSizePolicy
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QFont
 
 from core.signals import signals
 from core.config import get_config
+from core.i18n import get_lang
 from gui.theme import prettify_filter_name
 
 logger = logging.getLogger(__name__)
@@ -119,17 +121,13 @@ class StatCard(QFrame):
 class HistoryTab(QWidget):
     """Observation History tab - comprehensive stats dashboard with export/import."""
 
+    # Signal emitted when background maintenance finishes [PERF]
+    _maintenance_done_signal = pyqtSignal()
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.config = get_config()
-        self.lang = self.config.get('application.language', 'auto')
-        if self.lang == 'auto':
-            import locale
-            try:
-                loc = locale.getdefaultlocale()[0]
-                self.lang = 'fr' if loc and loc.lower().startswith('fr') else 'en'
-            except Exception:
-                self.lang = 'en'
+        self.lang = get_lang()
         self._init_ui()
         self._connect_signals()
         # Defer initial load to avoid DB access during construction
@@ -448,6 +446,7 @@ class HistoryTab(QWidget):
         """Connect to global signal bus."""
         signals.analysis_completed.connect(lambda r: self.refresh_all())
         signals.targets_refreshed.connect(self.refresh_all)
+        self._maintenance_done_signal.connect(self._on_maintenance_done)
 
     # =========================================================================
     # Data Refresh
@@ -456,7 +455,8 @@ class HistoryTab(QWidget):
     def refresh_all(self):
         """Refresh all statistics from database.
 
-        On every refresh we run lightweight maintenance:
+        On first refresh, runs lightweight maintenance in a background thread
+        to avoid blocking the GUI:
         - merge targets that share the same canonical_name (duplicates)
         - fill in missing object_type using catalog classification
         - normalise Greek Unicode chars in filter names
@@ -468,14 +468,19 @@ class HistoryTab(QWidget):
             logger.error(f"Failed to initialize observation history: {e}")
             return
 
-        # Lightweight cleanup (no-op when nothing to fix)
-        try:
-            self._history.merge_duplicate_targets()
-            self._history.fix_unknown_object_types()
-            self._history.normalize_filter_names()
-            self._history.normalize_equipment_names()
-        except Exception as e:
-            logger.debug(f"Cleanup pass: {e}")
+        # Lightweight cleanup (no-op when nothing to fix) — once per session, in background [PERF]
+        if not hasattr(self, '_maintenance_started'):
+            self._maintenance_started = True
+            def _do_maintenance():
+                try:
+                    self._history.merge_duplicate_targets()
+                    self._history.fix_unknown_object_types()
+                    self._history.normalize_filter_names()
+                    self._history.normalize_equipment_names()
+                except Exception as e:
+                    logger.debug(f"Cleanup pass: {e}")
+                self._maintenance_done_signal.emit()
+            threading.Thread(target=_do_maintenance, daemon=True).start()
 
         self._refresh_summary_cards()
         self._refresh_target_rankings()
@@ -484,6 +489,11 @@ class HistoryTab(QWidget):
         self._refresh_temporal_table()
         self._refresh_nights_table()
         self._refresh_object_types()
+
+    def _on_maintenance_done(self):
+        """Called when background maintenance finishes — refresh data to reflect any merges."""
+        self._refresh_summary_cards()
+        self._refresh_target_rankings()
 
     def _refresh_summary_cards(self):
         """Refresh the summary cards."""

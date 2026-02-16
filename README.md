@@ -143,6 +143,35 @@ python astromanager.py
 
 > **Note:** Both launchers are fully bilingual (EN/FR auto-detection). AstroManager also auto-installs missing dependencies on first launch.
 
+### Standalone Executable (.exe / AppImage)
+
+You can build a self-contained executable that bundles Python, all dependencies, and data files — no installation required.
+
+#### Windows (.exe)
+
+```bash
+# From an activated venv with all dependencies installed:
+pip install pyinstaller
+build.bat
+# → dist\AstroManager\AstroManager.exe
+```
+
+Or manually:
+```bash
+pyinstaller astromanager.spec --noconfirm
+```
+
+#### Linux / macOS
+
+```bash
+pip install pyinstaller
+chmod +x build.sh
+./build.sh
+# → dist/AstroManager/AstroManager
+```
+
+> **Note:** The build scripts are bilingual (EN/FR). The resulting executable is fully standalone — configuration and database are stored in `~/.astromanager/` as usual.
+
 ---
 
 ## Usage
@@ -272,9 +301,12 @@ astromanager/
 ├── requirements.txt             # Python dependencies
 ├── run.bat                      # Windows auto-launcher
 ├── run.sh                       # Linux/macOS auto-launcher
+├── build.bat                    # Windows .exe build script (PyInstaller)
+├── build.sh                     # Linux/macOS build script (PyInstaller)
+├── astromanager.spec            # PyInstaller spec file
 ├── LICENSE                      # MIT License
-├── USER_MANUAL_EN.tex           # English user manual (LaTeX)
-├── USER_MANUAL_FR.tex           # French user manual (LaTeX)
+├── USER_MANUAL_EN.pdf           # English user manual
+├── USER_MANUAL_FR.pdf           # French user manual
 │
 ├── core/
 │   ├── __init__.py              # Version definition (__version__)

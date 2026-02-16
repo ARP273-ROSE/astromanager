@@ -13,6 +13,7 @@ import os
 import re
 import shutil
 import struct
+import time
 import logging
 from pathlib import Path
 from datetime import datetime
@@ -21,7 +22,17 @@ from typing import Dict, List, Optional, Tuple, Any, Callable
 
 import numpy as np
 
+try:
+    from defusedxml import ElementTree as SafeET
+except ImportError:
+    import warnings
+    warnings.warn("defusedxml not installed — XML parsing is NOT protected against XXE attacks", stacklevel=2)
+    from xml.etree import ElementTree as SafeET
+
 logger = logging.getLogger(__name__)
+
+# Maximum XISF header size (same as compression.py)
+MAX_HEADER_SIZE = 100 * 1024 * 1024  # 100 MB
 
 # ---------------------------------------------------------------------------
 # NINA-compatible FITS header field definitions
@@ -826,28 +837,31 @@ def _read_fits_header(filepath: str) -> Dict[str, Any]:
 
 def _read_xisf_header(filepath: str) -> Dict[str, Any]:
     """Read FITSKeyword elements from XISF XML header."""
-    import xml.etree.ElementTree as ET
-    
     header_dict = {}
-    
+
     with open(filepath, 'rb') as f:
         # Read XISF signature
         sig = f.read(8)
         if sig != b'XISF0100':
             raise ValueError(f"Not a valid XISF file: {filepath}")
-        
+
         # Read header length
         header_len = struct.unpack('<I', f.read(4))[0]
+        if header_len > MAX_HEADER_SIZE:
+            raise ValueError(
+                f"XISF header length {header_len} exceeds maximum "
+                f"allowed size ({MAX_HEADER_SIZE} bytes): {filepath}"
+            )
         f.read(4)  # reserved
-        
+
         # Read XML header
         xml_data = f.read(header_len)
         xml_str = xml_data.rstrip(b'\x00').decode('utf-8', errors='replace')
-    
-    # Parse XML
+
+    # Parse XML (using defusedxml for XXE protection)
     try:
-        root = ET.fromstring(xml_str)
-    except ET.ParseError:
+        root = SafeET.fromstring(xml_str)
+    except SafeET.ParseError if hasattr(SafeET, 'ParseError') else Exception:
         logger.warning(f"Failed to parse XISF XML header: {filepath}")
         return header_dict
     
@@ -903,8 +917,13 @@ def write_header_changes(filepath: str, changes: Dict[str, Any],
     
     if backup:
         bak = filepath + '.bak'
-        if not os.path.exists(bak):
+        try:
+            # Atomic backup creation — fails if backup already exists
+            fd = os.open(bak, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(fd)
             shutil.copy2(filepath, bak)
+        except FileExistsError:
+            pass  # Backup already exists, skip
     
     try:
         if ftype in ('fits', 'fz'):
@@ -962,14 +981,20 @@ def _write_fits_header(filepath: str, changes: Dict[str, Any]) -> bool:
 
 def _write_xisf_header(filepath: str, changes: Dict[str, Any]) -> bool:
     """Write header changes to an XISF file by modifying the XML header."""
-    import xml.etree.ElementTree as ET
-    
+    # Use module-level SafeET (defusedxml or fallback)
+    ET = SafeET
+
     with open(filepath, 'rb') as f:
         sig = f.read(8)
         if sig != b'XISF0100':
             raise ValueError(f"Not a valid XISF file: {filepath}")
-        
+
         header_len = struct.unpack('<I', f.read(4))[0]
+        if header_len > MAX_HEADER_SIZE:
+            raise ValueError(
+                f"XISF header length {header_len} exceeds maximum "
+                f"allowed size ({MAX_HEADER_SIZE} bytes): {filepath}"
+            )
         reserved = f.read(4)
         xml_data = f.read(header_len)
         # Everything after the header
@@ -1044,9 +1069,15 @@ def _write_xisf_header(filepath: str, changes: Dict[str, Any]) -> bool:
                 new_elem.set('comment', '')
                 existing_keywords[key] = new_elem
     
-    # Serialize XML back
-    new_xml = ET.tostring(root, encoding='unicode', xml_declaration=True)
+    # Serialize XML back — use standard ET for tostring (defusedxml may not have it)
+    import xml.etree.ElementTree as _StdET
+    new_xml = _StdET.tostring(root, encoding='unicode', xml_declaration=True)
     new_xml_bytes = new_xml.encode('utf-8')
+    # Validate XML before writing (using safe parser)
+    try:
+        SafeET.fromstring(new_xml_bytes)
+    except Exception as e:
+        raise ValueError(f"Generated invalid XML: {e}")
     
     # Pad to maintain alignment (XISF requires header to be consistent)
     # If new XML is shorter, pad with null bytes to original length
@@ -1096,12 +1127,13 @@ def _write_xisf_header(filepath: str, changes: Dict[str, Any]) -> bool:
 def _adjust_xisf_offsets(xml_str: str, delta: int) -> str:
     """Adjust attachment:offset:size references in XISF XML when header size changes."""
     def replace_offset(match):
-        offset = int(match.group(1))
-        size = match.group(2)
+        prefix = match.group(1)
+        offset = int(match.group(2))
+        suffix = match.group(3)
         new_offset = offset + delta
-        return f'attachment:{new_offset}:{size}'
-    
-    return re.sub(r'attachment:(\d+):(\d+)', replace_offset, xml_str)
+        return f'{prefix}{new_offset}{suffix}'
+
+    return re.sub(r'(location="attachment:)(\d+)(:\d+")', replace_offset, xml_str)
 
 
 # ---------------------------------------------------------------------------
@@ -1393,11 +1425,17 @@ def _sanitize(s: str) -> str:
     """Sanitize a string for use in filenames."""
     if not s:
         return ''
+    # Strip control characters (ord < 32)
+    s = ''.join(c for c in s if ord(c) >= 32)
     s = s.strip()
     # Replace problematic characters
     s = re.sub(r'[<>:"/\\|?*\']', '_', s)
     s = re.sub(r'\s+', ' ', s)
-    return s.strip()
+    # Strip leading/trailing dots and spaces
+    s = s.strip('. ')
+    # Truncate to 200 characters max
+    s = s[:200]
+    return s
 
 
 def _norm_image_type(raw: Any) -> str:
@@ -1611,11 +1649,23 @@ def rename_files_batch(filepaths: List[str],
                 results[old_path] = new_path
             elif copy_mode:
                 os.makedirs(os.path.dirname(new_path), exist_ok=True)
-                shutil.copy2(old_path, new_path)
+                try:
+                    shutil.copy2(old_path, new_path)
+                except (OSError, shutil.Error) as e:
+                    # Handle collision from race condition
+                    base, ext2 = os.path.splitext(new_path)
+                    new_path = f"{base}_{int(time.time() * 1000) % 100000}{ext2}"
+                    shutil.copy2(old_path, new_path)
                 results[old_path] = new_path
             else:
                 os.makedirs(os.path.dirname(new_path), exist_ok=True)
-                os.rename(old_path, new_path)
+                try:
+                    shutil.move(old_path, new_path)
+                except (OSError, shutil.Error) as e:
+                    # Handle collision from race condition
+                    base, ext2 = os.path.splitext(new_path)
+                    new_path = f"{base}_{int(time.time() * 1000) % 100000}{ext2}"
+                    shutil.move(old_path, new_path)
                 results[old_path] = new_path
         except Exception as e:
             logger.error(f"Rename failed {old_path} -> {new_path}: {e}")

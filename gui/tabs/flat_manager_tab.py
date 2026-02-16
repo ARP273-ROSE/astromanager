@@ -21,6 +21,7 @@ from PyQt6.QtGui import QColor, QFont
 
 from core.signals import signals
 from core.config import get_config
+from core.i18n import get_lang
 from gui.theme import get_mono_font
 
 
@@ -92,14 +93,7 @@ class FlatManagerTab(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.config = get_config()
-        self.lang = self.config.get('application.language', 'auto')
-        if self.lang == 'auto':
-            import locale
-            try:
-                loc = locale.getdefaultlocale()[0]
-                self.lang = 'fr' if loc and loc.lower().startswith('fr') else 'en'
-            except Exception:
-                self.lang = 'en'
+        self.lang = get_lang()
         self.flat_groups = []
         self.analysis_data = None
         self._scan_worker = None
@@ -410,3 +404,9 @@ class FlatManagerTab(QWidget):
             with open(path, 'w', encoding='utf-8') as f:
                 f.write(self.coverage_text.toPlainText())
             QMessageBox.information(self, self._tr("Export", "Export"), self._tr(f"Report saved to {path}", f"Rapport sauvegardé dans {path}"))
+
+    def cleanup(self):
+        """Clean up worker thread on shutdown."""
+        if hasattr(self, '_scan_worker') and self._scan_worker and self._scan_worker.isRunning():
+            self._scan_worker.quit()
+            self._scan_worker.wait(3000)

@@ -40,8 +40,20 @@ import multiprocessing
 from pathlib import Path
 import argparse
 
-# Add current directory to Python path
-sys.path.insert(0, str(Path(__file__).parent))
+# OBLIGATOIRE: freeze_support() must be called before any ProcessPoolExecutor
+# usage when packaged as a Windows .exe with PyInstaller.
+multiprocessing.freeze_support()
+
+
+def _get_base_dir():
+    """Return base directory (works in dev and frozen .exe)."""
+    if getattr(sys, 'frozen', False):
+        return Path(sys._MEIPASS)
+    return Path(__file__).parent
+
+
+# Add current directory to Python path (append to avoid hijacking stdlib modules) [SEC]
+sys.path.append(str(_get_base_dir()))
 
 from core import __version__
 
@@ -99,6 +111,10 @@ def _check_and_install(package_name, import_name=None, pip_name=None):
 
 def _setup_dependencies():
     """Auto-install all required dependencies."""
+    # Skip when running as a frozen .exe — everything is already bundled
+    if getattr(sys, 'frozen', False):
+        return True
+
     # Only run in main process (not in ProcessPoolExecutor workers)
     if multiprocessing.current_process().name != 'MainProcess':
         return True
@@ -133,14 +149,24 @@ def _setup_dependencies():
         ("astroquery", "astroquery", "astroquery", False),
         ("zstandard", "zstandard", "zstandard", False),
         ("lz4", "lz4", "lz4", False),
+        ("defusedxml", "defusedxml", "defusedxml", False),
         ("PyYAML", "yaml", "PyYAML", False),
     ]
+
+    # Cache find_spec results to avoid repeated filesystem lookups [PERF]
+    _spec_cache = {}
+
+    def _cached_find_spec(import_name):
+        root = import_name.split('.')[0]
+        if root not in _spec_cache:
+            _spec_cache[root] = importlib.util.find_spec(root)
+        return _spec_cache[root]
 
     # Quick check: are all required deps already installed?
     all_present = True
     for name, import_name, pip_name, required in deps:
         if required:
-            spec = importlib.util.find_spec(import_name.split('.')[0])
+            spec = _cached_find_spec(import_name)
             if spec is None:
                 all_present = False
                 break
@@ -157,7 +183,7 @@ def _setup_dependencies():
     failed_required = []
     total_deps = len(deps)
     for idx, (name, import_name, pip_name, required) in enumerate(deps, 1):
-        spec = importlib.util.find_spec(import_name.split('.')[0])
+        spec = _cached_find_spec(import_name)
         if spec is not None:
             print(f"  [{idx}/{total_deps}] {name} ... OK")
         else:

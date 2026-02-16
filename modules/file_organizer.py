@@ -21,6 +21,7 @@ import os
 import shutil
 import logging
 from pathlib import Path
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import Dict, List, Optional, Callable, Tuple
 from datetime import datetime
 
@@ -143,7 +144,7 @@ def plan_organization(source_folder: str,
     for root, _, filenames in os.walk(source_folder):
         for fn in filenames:
             ext = fn.lower()
-            if ext.endswith(('.fits', '.fit', '.xisf', '.fz')):
+            if ext.endswith(('.fits', '.fit', '.fts', '.xisf', '.fz')):
                 files.append(os.path.join(root, fn))
 
     if not files:
@@ -152,21 +153,58 @@ def plan_organization(source_folder: str,
     plan = []
     total = len(files)
 
-    for i, filepath in enumerate(files):
+    # Phase 1: Read all headers in parallel for performance
+    file_infos = {}
+    num_workers = min(os.cpu_count() or 4, total, 8)
+
+    if num_workers > 1 and total > 5:
+        with ProcessPoolExecutor(max_workers=num_workers) as executor:
+            futures = {executor.submit(_read_file_info, fp): fp for fp in files}
+            for i, future in enumerate(as_completed(futures)):
+                if check_abort and check_abort():
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    break
+                fp = futures[future]
+                try:
+                    info = future.result()
+                    if info:
+                        file_infos[fp] = info
+                except Exception:
+                    pass
+                if progress_callback and i % 50 == 0:
+                    progress_callback(i, total, f"Planning: {os.path.basename(fp)}")
+    else:
+        for i, fp in enumerate(files):
+            if check_abort and check_abort():
+                break
+            if os.path.islink(fp):
+                continue
+            info = _read_file_info(fp)
+            if info:
+                file_infos[fp] = info
+            if progress_callback and i % 50 == 0:
+                progress_callback(i, total, f"Planning: {os.path.basename(fp)}")
+
+    # Phase 2: Build plan from cached headers (fast, in-memory)
+    errors = []
+    for filepath, info in file_infos.items():
         if check_abort and check_abort():
             break
 
-        if progress_callback and i % 50 == 0:
-            progress_callback(i, total, f"Planning: {os.path.basename(filepath)}")
-
-        info = _read_file_info(filepath)
-        if not info:
+        # Skip symlinks
+        if os.path.islink(filepath):
             continue
 
         # Build subdirectory from pattern
         subdir = pattern.format(**info)
         dest_dir = os.path.join(dest_folder, subdir)
         dest_path = os.path.join(dest_dir, os.path.basename(filepath))
+
+        # Path traversal check
+        rel = os.path.relpath(dest_path, dest_folder)
+        if rel.startswith('..'):
+            errors.append(f"Skipped {filepath}: path traversal detected")
+            continue
 
         # Handle name conflicts
         if os.path.exists(dest_path) and dest_path != filepath:
@@ -205,8 +243,10 @@ def execute_organization(plan: List[Tuple[str, str]],
     Returns:
         Dict with 'moved', 'errors', 'skipped' counts
     """
-    result = {'moved': 0, 'errors': 0, 'skipped': 0, 'total': len(plan)}
+    result = {'moved': 0, 'errors': 0, 'skipped': 0, 'total': len(plan),
+              'error_details': []}
     total = len(plan)
+    completed_moves = []  # Track moves for potential rollback info
 
     for i, (src, dst) in enumerate(plan):
         if check_abort and check_abort():
@@ -222,15 +262,32 @@ def execute_organization(plan: List[Tuple[str, str]],
         try:
             os.makedirs(os.path.dirname(dst), exist_ok=True)
 
+            # Handle TOCTOU race: if dest appeared between plan and execute
+            if os.path.exists(dst) and dst != src:
+                import time as _time
+                base, ext = os.path.splitext(dst)
+                dst = f"{base}_{int(_time.time() * 1000) % 100000}{ext}"
+
             if copy_mode:
                 shutil.copy2(src, dst)
             else:
                 shutil.move(src, dst)
+                completed_moves.append((src, dst))
 
             result['moved'] += 1
         except Exception as e:
             logger.warning(f"Failed to organize {src}: {e}")
             result['errors'] += 1
+            result['error_details'].append(f"{src}: {e}")
+
+    # Summary of partial failure for move mode
+    if not copy_mode and result['errors'] > 0 and completed_moves:
+        logger.warning(
+            f"Partial failure in move mode: {result['moved']} moved, "
+            f"{result['errors']} errors. Successfully moved files cannot be "
+            f"automatically rolled back."
+        )
+        result['completed_moves'] = completed_moves
 
     if progress_callback:
         progress_callback(total, total, "Organization complete")
