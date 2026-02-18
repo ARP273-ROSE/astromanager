@@ -699,6 +699,7 @@ class AstroManagerWindow(QMainWindow):
 
         changelog = get_changelog(release_info)
         date = release_info.get('date', '')[:10]
+        is_frozen = getattr(sys, 'frozen', False)
 
         dialog = QDialog(self)
         dialog.setWindowTitle(self._tr("Update Available", "Mise à jour disponible"))
@@ -716,6 +717,17 @@ class AstroManagerWindow(QMainWindow):
         header.setWordWrap(True)
         layout.addWidget(header)
 
+        if is_frozen:
+            frozen_note = QLabel(self._tr(
+                "<p><i>You are running the standalone .exe version.<br>"
+                "Please download the new version from GitHub and replace your current installation.</i></p>",
+                "<p><i>Vous utilisez la version .exe autonome.<br>"
+                "Veuillez télécharger la nouvelle version depuis GitHub et remplacer votre installation actuelle.</i></p>"
+            ))
+            frozen_note.setWordWrap(True)
+            frozen_note.setStyleSheet(f"color: {COLORS.get('accent_orange', '#FFA500')};")
+            layout.addWidget(frozen_note)
+
         if changelog:
             changelog_label = QLabel(self._tr("Changelog:", "Notes de version :"))
             changelog_label.setStyleSheet("font-weight: bold;")
@@ -729,28 +741,40 @@ class AstroManagerWindow(QMainWindow):
 
         btn_layout = QHBoxLayout()
 
-        install_btn = QPushButton(self._tr(
-            "Download and Install", "Télécharger et installer"))
-        install_btn.setStyleSheet(
-            f"background-color: {COLORS['accent_cyan']}; color: white; "
-            f"font-weight: bold; padding: 6px 16px;")
+        if not is_frozen:
+            install_btn = QPushButton(self._tr(
+                "Download and Install", "Télécharger et installer"))
+            install_btn.setStyleSheet(
+                f"background-color: {COLORS['accent_cyan']}; color: white; "
+                f"font-weight: bold; padding: 6px 16px;")
+            btn_layout.addWidget(install_btn)
+            install_btn.clicked.connect(lambda: (dialog.accept(), self._do_update(release_info)))
 
-        github_btn = QPushButton(self._tr("View on GitHub", "Voir sur GitHub"))
+        github_btn = QPushButton(self._tr(
+            "Download from GitHub" if is_frozen else "View on GitHub",
+            "Télécharger depuis GitHub" if is_frozen else "Voir sur GitHub"))
+        if is_frozen:
+            github_btn.setStyleSheet(
+                f"background-color: {COLORS['accent_cyan']}; color: white; "
+                f"font-weight: bold; padding: 6px 16px;")
         later_btn = QPushButton(self._tr("Later", "Plus tard"))
 
-        btn_layout.addWidget(install_btn)
         btn_layout.addWidget(github_btn)
         btn_layout.addWidget(later_btn)
         layout.addLayout(btn_layout)
 
-        install_btn.clicked.connect(lambda: (dialog.accept(), self._do_update(release_info)))
         github_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(release_info['url'])))
         later_btn.clicked.connect(dialog.reject)
 
         dialog.exec()
 
     def _do_update(self, release_info):
-        """Download and apply update"""
+        """Download and apply update (source installs only, not frozen .exe)"""
+        # Frozen .exe cannot self-update — redirect to GitHub
+        if getattr(sys, 'frozen', False):
+            QDesktopServices.openUrl(QUrl(release_info['url']))
+            return
+
         reply = QMessageBox.question(self,
             self._tr("Update", "Mise à jour"),
             self._tr(
