@@ -668,8 +668,8 @@ class AstroManagerWindow(QMainWindow):
         if result is not None:
             if self._update_silent:
                 msg = self._tr(
-                    f"AstroManager v{result['version']} available — Help > Check for Updates",
-                    f"AstroManager v{result['version']} disponible — Aide > Vérifier les mises à jour"
+                    f"🔄 Update available: v{result['version']} — Help > Check for Updates",
+                    f"🔄 Mise à jour disponible : v{result['version']} — Aide > Vérifier les mises à jour"
                 )
                 self.status_bar.showMessage(msg, 15000)
             else:
