@@ -682,7 +682,7 @@ def fits_to_xisf(fits_path, output_path=None, profile='zlib_6',
     try:
         prof = COMPRESSION_PROFILES.get(profile, COMPRESSION_PROFILES['zlib_6'])
 
-        with astropy_fits.open(fits_path, memmap=True) as hdul:
+        with astropy_fits.open(fits_path, memmap=False) as hdul:
             data = hdul[0].data
             header = hdul[0].header.copy()
 
@@ -695,13 +695,11 @@ def fits_to_xisf(fits_path, output_path=None, profile='zlib_6',
                 for k, v in header_overrides.items():
                     header[k] = v
 
-            # Single copy from memmap — avoid double allocation
+            # Ensure native byte order and contiguous layout
             if data.dtype.byteorder == '>':
                 data = data.byteswap().newbyteorder()
             if not data.flags['C_CONTIGUOUS']:
                 data = np.ascontiguousarray(data)
-            else:
-                data = data.copy()  # Copy once to detach from memmap
 
         if output_path is None:
             output_path = str(Path(fits_path).with_suffix('.xisf'))
