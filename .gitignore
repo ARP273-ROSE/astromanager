@@ -21,6 +21,7 @@ env/
 
 # Claude Code
 .claude/
+CLAUDE.md
 
 # LaTeX build artifacts
 *.aux
