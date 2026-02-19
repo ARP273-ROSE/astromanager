@@ -432,13 +432,33 @@ class XISFWriter:
 
         parts.append('  <Image ' + ' '.join(img_attrs) + '>')
 
-        # FITS keywords
+        # FITS keywords (XISF 1.0 spec: exclude structural keywords)
+        _XISF_FORBIDDEN = {
+            'SIMPLE', 'BITPIX', 'NAXIS', 'NAXIS1', 'NAXIS2', 'NAXIS3',
+            'NAXIS4', 'EXTEND', 'XTENSION', 'PCOUNT', 'GCOUNT', 'THEAP',
+            'TFIELDS', 'BLANK', 'BSCALE', 'BZERO', 'DATAMAX', 'DATAMIN',
+        }
         if fits_header:
             for card in fits_header.cards:
                 keyword = str(card.keyword).strip()
-                if not keyword:
+                if not keyword or keyword in _XISF_FORBIDDEN:
                     continue
-                value = self._escape_xml(str(card.value))
+                if keyword.startswith(('TFORM', 'TBCOL')):
+                    continue
+                # Format value per XISF 1.0 / FITS convention
+                raw = card.value
+                if raw is None:
+                    continue
+                if keyword in ('COMMENT', 'HISTORY'):
+                    comment = self._escape_xml(str(raw))
+                    parts.append(f'    <FITSKeyword name="{keyword}" value="" comment="{comment}" />')
+                    continue
+                if isinstance(raw, bool):
+                    value = 'T' if raw else 'F'
+                elif isinstance(raw, str):
+                    value = f"'{self._escape_xml(raw)}'"
+                else:
+                    value = self._escape_xml(str(raw))
                 comment = self._escape_xml(str(card.comment)) if card.comment else ""
                 line = f'    <FITSKeyword name="{keyword}" value="{value}"'
                 if comment:
