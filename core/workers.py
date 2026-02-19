@@ -118,6 +118,7 @@ def _compress_single_file(task: Dict) -> Dict:
         backup_folder = task.get('backup_folder', '')
         source_folder = task.get('source_folder', '')
         verify_integrity = task.get('verify_integrity', True)
+        header_overrides = task.get('header_overrides')
 
         os.makedirs(out_dir, exist_ok=True)
 
@@ -128,7 +129,8 @@ def _compress_single_file(task: Dict) -> Dict:
             if src_ext in ('.fits', '.fit'):
                 from modules.compression import fits_to_xisf
                 out_path = os.path.join(out_dir, basename + '.xisf')
-                result = fits_to_xisf(filepath, out_path, profile=profile_name)
+                result = fits_to_xisf(filepath, out_path, profile=profile_name,
+                                      header_overrides=header_overrides)
             elif src_ext == '.xisf':
                 from modules.compression import recompress_xisf
                 out_path = os.path.join(out_dir, basename + '.xisf')
@@ -1598,6 +1600,14 @@ class UnifiedWorker(QThread):
             basename = Path(fp).stem
             out_dir = os.path.dirname(fp)
 
+            # Build per-file header overrides from resolved metadata
+            meta = file_metadata.get(fp, {})
+            header_overrides = {}
+            if meta.get('telescope'):
+                header_overrides['TELESCOP'] = meta['telescope']
+            if meta.get('filter'):
+                header_overrides['FILTER'] = meta['filter']
+
             tasks.append({
                 'filepath': fp,
                 'src_ext': src_ext,
@@ -1608,6 +1618,7 @@ class UnifiedWorker(QThread):
                 'backup_folder': backup_folder,
                 'source_folder': source_folder,
                 'verify_integrity': verify_integrity,
+                'header_overrides': header_overrides or None,
             })
 
         processed = 0
@@ -1717,6 +1728,9 @@ class UnifiedWorker(QThread):
 
         renamed_files = {}  # xisf_old_path -> xisf_new_path
 
+        # Build reverse lookup: xisf_path -> original fits path
+        xisf_to_orig = {v: k for k, v in xisf_files.items()}
+
         # Read headers from XISF files and sort for frame numbering
         xisf_headers = {}
         for xisf_fp in xisf_list:
@@ -1725,7 +1739,16 @@ class UnifiedWorker(QThread):
             if not os.path.exists(xisf_fp):
                 continue
             try:
-                xisf_headers[xisf_fp] = read_header(xisf_fp)
+                h = read_header(xisf_fp)
+                # Inject resolved metadata (telescope/filter overrides)
+                orig_fp = xisf_to_orig.get(xisf_fp)
+                if orig_fp and orig_fp in file_metadata:
+                    meta = file_metadata[orig_fp]
+                    if meta.get('telescope'):
+                        h['TELESCOP'] = meta['telescope']
+                    if meta.get('filter'):
+                        h['FILTER'] = meta['filter']
+                xisf_headers[xisf_fp] = h
             except Exception as e:
                 print(f"  ⚠️ Cannot read header: {os.path.basename(xisf_fp)}: {e}")
 
