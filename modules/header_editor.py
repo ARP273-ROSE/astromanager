@@ -1071,6 +1071,9 @@ def _write_xisf_header(filepath: str, changes: Dict[str, Any]) -> bool:
     
     # Serialize XML back — use standard ET for tostring (defusedxml may not have it)
     import xml.etree.ElementTree as _StdET
+    # Register default namespace to avoid ns0: prefixes (PixInsight requires it)
+    _StdET.register_namespace('', ns)
+    _StdET.register_namespace('xsi', 'http://www.w3.org/2001/XMLSchema-instance')
     new_xml = _StdET.tostring(root, encoding='unicode', xml_declaration=True)
     new_xml_bytes = new_xml.encode('utf-8')
     # Validate XML before writing (using safe parser)
