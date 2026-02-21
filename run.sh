@@ -140,9 +140,18 @@ echo "  [OK] $PY_VER"
 #  Step 2: Virtual environment
 # ============================================================================
 if [ -f "$VENV_DIR/bin/python" ]; then
-    msg "  [OK] Environnement virtuel existant" \
-        "  [OK] Existing virtual environment"
-else
+    # Verify the existing venv actually works (not broken by removed Python)
+    if "$VENV_DIR/bin/python" -c "import sys; sys.exit(0)" >/dev/null 2>&1; then
+        msg "  [OK] Environnement virtuel existant" \
+            "  [OK] Existing virtual environment"
+    else
+        msg "  [!] Environnement virtuel casse (Python de base supprime). Recreation..." \
+            "  [!] Broken virtual environment (base Python removed). Recreating..."
+        rm -rf "$VENV_DIR"
+    fi
+fi
+
+if [ ! -f "$VENV_DIR/bin/python" ]; then
     msg "  Creation de l'environnement virtuel..." \
         "  Creating virtual environment..."
 
