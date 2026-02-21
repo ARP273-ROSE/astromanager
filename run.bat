@@ -107,12 +107,23 @@ REM ============================================================================
 REM  Step 2: Virtual environment
 REM ============================================================================
 if exist "!VENV_DIR!\Scripts\python.exe" (
-    if "!LANG!"=="fr" (
-        echo   [OK] Environnement virtuel existant
+    REM Verify the existing venv actually works (not broken by removed Python)
+    "!VENV_DIR!\Scripts\python.exe" -c "import sys; sys.exit(0)" >nul 2>&1
+    if !errorlevel!==0 (
+        if "!LANG!"=="fr" (
+            echo   [OK] Environnement virtuel existant
+        ) else (
+            echo   [OK] Existing virtual environment
+        )
+        goto :activate_venv
     ) else (
-        echo   [OK] Existing virtual environment
+        if "!LANG!"=="fr" (
+            echo   [!] Environnement virtuel casse ^(Python de base supprime^). Recreation...
+        ) else (
+            echo   [!] Broken virtual environment ^(base Python removed^). Recreating...
+        )
+        rmdir /s /q "!VENV_DIR!" >nul 2>&1
     )
-    goto :activate_venv
 )
 
 echo.
