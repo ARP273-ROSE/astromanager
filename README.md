@@ -33,6 +33,7 @@
 - Edit FITS headers across hundreds/thousands of files at once
 - NINA-compatible field definitions organized by category
 - Filename pattern builder with tokens ($IMAGETYPE$, $TARGETNAME$, $FILTER$, etc.)
+- Auto-rename proposal after header changes (filenames reflect updated headers)
 - Bulk operations with preview and undo
 - Supports FITS, XISF, and FITS.FZ formats
 
@@ -192,7 +193,8 @@ chmod +x build.sh
 1. Select files or folder
 2. Edit values by category (Acquisition, Camera, Filter, Telescope, etc.)
 3. Preview changes, then apply to all files
-4. Use **Undo** if needed
+4. After applying, AstroManager proposes renaming files to match the NINA pattern (includes updated headers like FILTER in filename)
+5. Use **Undo** if needed
 
 ### 4. Flat Manager Tab
 1. Scan your flats library
