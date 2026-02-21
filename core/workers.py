@@ -933,7 +933,11 @@ class UnifiedWorker(QThread):
                 if hasattr(fag, 'extract_duplicates_to_folder'):
                     # extract_duplicates_to_folder(source_root, dest_folder)
                     # It reads duplicates from the global DETECTED_DUPLICATES internally
-                    dup_folder = os.path.join(folder, "duplicates_extracted")
+                    # Place extraction folder as sibling of source (normpath handles trailing slashes)
+                    folder_normalized = os.path.normpath(folder)
+                    dup_folder = os.path.join(
+                        os.path.dirname(folder_normalized),
+                        "extracted_" + datetime.now().strftime("%Y%m%d_%H%M%S"))
                     fag.extract_duplicates_to_folder(folder, dup_folder)
                 else:
                     print("  ⚠️ Duplicate extraction not available in legacy module")

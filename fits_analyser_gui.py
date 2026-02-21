@@ -1430,7 +1430,7 @@ def optimize_storage(source_root, extraction_folder, prefer_format='xisf', compr
     
     all_files = []
     fits_extensions = ('.fit', '.fits', '.fits.fz', '.xisf', '.xifs', '.xif')
-    skip_folders = ['astronomical_analysis_', 'duplicates_', 'fits_originals_', os.path.basename(extraction_folder)]
+    skip_folders = ['astronomical_analysis_', 'duplicates_', 'duplicates_extracted', 'fits_originals_', 'extracted_', os.path.basename(extraction_folder)]
     
     for root, dirs, files in os.walk(source_root):
         dirs[:] = [d for d in dirs if not any(d.startswith(skip) for skip in skip_folders)]
@@ -1630,12 +1630,17 @@ def optimize_storage(source_root, extraction_folder, prefer_format='xisf', compr
                 if not os.path.exists(file_path):
                     continue
                 
-                # Compute relative path
+                # Compute relative path (normalize to handle trailing slashes and mixed separators)
                 try:
-                    rel_path = os.path.relpath(file_path, source_root)
+                    rel_path = os.path.relpath(
+                        os.path.normpath(os.path.abspath(file_path)),
+                        os.path.normpath(os.path.abspath(source_root)))
                 except ValueError:
                     rel_path = os.path.basename(file_path)
-                
+                # Safety: if rel_path escapes source_root, use basename only
+                if rel_path.startswith('..'):
+                    rel_path = os.path.basename(file_path)
+
                 # Create destination
                 dest_path = os.path.join(extraction_folder, rel_path)
                 dest_dir = os.path.dirname(dest_path)
@@ -1754,16 +1759,18 @@ def extract_duplicates_to_folder(source_root, dest_folder):
     # Map tuple dup_type to stats key
     dup_type_to_key = {'name': 'name_based', 'content': 'content_based', 'compressed': 'compressed'}
     
+    # Normalize source_root once: resolve trailing slashes and mixed separators
+    source_root_abs = os.path.normpath(os.path.abspath(source_root))
+
     for dup_info in all_duplicates:
         duplicate_path = dup_info[0]
         kept_path = dup_info[1]
         dup_type = dup_info[3] if len(dup_info) > 3 else 'unknown'
         type_key = dup_type_to_key.get(dup_type, 'name_based')
-        
+
         try:
             # Normalize to absolute path so exists() works regardless of how path was stored
-            duplicate_path_abs = os.path.abspath(duplicate_path)
-            source_root_abs = os.path.abspath(source_root)
+            duplicate_path_abs = os.path.normpath(os.path.abspath(duplicate_path))
             
             # Compute relative path from source root
             try:
@@ -1771,7 +1778,11 @@ def extract_duplicates_to_folder(source_root, dest_folder):
             except ValueError:
                 # On Windows, relpath fails if paths are on different drives
                 rel_path = os.path.basename(duplicate_path_abs)
-            
+
+            # Safety: if rel_path escapes source_root (starts with ..), use basename only
+            if rel_path.startswith('..'):
+                rel_path = os.path.basename(duplicate_path_abs)
+
             # Create destination path preserving structure
             dest_path = os.path.join(dest_folder, rel_path)
             dest_dir = os.path.dirname(dest_path)
@@ -1889,7 +1900,7 @@ def compress_fits_to_xisf(source_root, backup_folder=None, workers=1, add_to_dup
     fits_files = []
     for root, dirs, files in os.walk(source_root):
         # Skip backup, analysis and extraction folders
-        skip_folders = ['astronomical_analysis_', 'duplicates_', 'fits_originals_', 'extracted_']
+        skip_folders = ['astronomical_analysis_', 'duplicates_', 'duplicates_extracted', 'fits_originals_', 'extracted_']
         if backup_folder:
             skip_folders.append(os.path.basename(backup_folder))
         dirs[:] = [d for d in dirs if not any(d.startswith(skip) for skip in skip_folders)]
@@ -2037,10 +2048,15 @@ def compress_fits_to_xisf(source_root, backup_folder=None, workers=1, add_to_dup
                             else:
                                 print(f"   ✓ {os.path.basename(fits_path)} → .xisf (verified, queued for extraction)")
                         elif backup_folder:
-                            # Move original to backup folder
+                            # Move original to backup folder (normalize paths for consistent relpath)
                             try:
-                                rel_path = os.path.relpath(fits_path, source_root)
+                                rel_path = os.path.relpath(
+                                    os.path.normpath(os.path.abspath(fits_path)),
+                                    os.path.normpath(os.path.abspath(source_root)))
                             except ValueError:
+                                rel_path = os.path.basename(fits_path)
+                            # Safety: if rel_path escapes source_root, use basename only
+                            if rel_path.startswith('..'):
                                 rel_path = os.path.basename(fits_path)
                             
                             backup_path = os.path.join(backup_folder, rel_path)
@@ -2971,7 +2987,8 @@ def get_file_signature(file_path):
             #   - temps de pose arrondi
             #   - résolution
             #   - binning
-            #   - et pour les poses < 1s: un numéro de frame si disponible
+            #   - filter, object (pour éviter les faux doublons entre filtres/cibles)
+            #   - frame_no si disponible (pour distinguer les rafales/poses consécutives)
             try:
                 exptime_val = cached_info.get('exptime', 0)
                 exptime_rounded = round(float(exptime_val), 2) if exptime_val else 0
@@ -2983,29 +3000,25 @@ def get_file_signature(file_path):
             naxis2 = cached_info.get('naxis2', 0)
             binning = cached_info.get('binning', '') or ''
             frame_no = cached_info.get('frame_no', '') or ''
+            filter_name_c = cached_info.get('filter', '') or ''
+            obj_name_c = cached_info.get('object', '') or ''
             # Default binning to 1x1 when dimensions are known but no bin info
             if not binning and naxis1 and naxis2:
                 binning = '1x1'
 
-            if exptime_rounded < 1.0 and frame_no:
-                signature = (
-                    cached_info.get('date_obs', ''),
-                    image_type,
-                    exptime_rounded,
-                    naxis1,
-                    naxis2,
-                    binning,
-                    frame_no,
-                )
-            else:
-                signature = (
-                    cached_info.get('date_obs', ''),
-                    image_type,
-                    exptime_rounded,
-                    naxis1,
-                    naxis2,
-                    binning,
-                )
+            sig_fields = [
+                cached_info.get('date_obs', ''),
+                image_type,
+                exptime_rounded,
+                naxis1,
+                naxis2,
+                binning,
+                filter_name_c,
+                obj_name_c,
+            ]
+            if frame_no:
+                sig_fields.append(frame_no)
+            signature = tuple(sig_fields)
             return signature, cached_info
         
         file_path_str = str(file_path).lower()
@@ -3250,21 +3263,28 @@ def get_file_signature(file_path):
             if val:
                 frame_no = str(val).strip()
                 break
-        # For very short exposures, try to extract an index from the filename if header is missing it
-        if (not frame_no) and exptime is not None:
-            try:
-                exptime_val = float(exptime)
-            except Exception:
-                exptime_val = None
-            if exptime_val is not None and exptime_val < 1.0:
-                import re, os as _os
-                fname = _os.path.basename(str(file_path))
-                # Common patterns: _0001, -0001, (1), ending with digits before extension
-                m = re.search(r'(?:[_\-])(\d{3,5})(?=\.[^.]+$)', fname)
-                if not m:
-                    m = re.search(r'\((\d{1,5})\)(?=\.[^.]+$)', fname)
-                if not m:
-                    m = re.search(r'(\d{1,5})(?=\.[^.]+$)', fname)
+        # Extract frame/sequence number from filename when header doesn't have one.
+        # Applied to ALL exposure lengths to distinguish consecutive exposures
+        # that may share the same DATE-OBS (e.g. remote observatory timestamp bugs).
+        if not frame_no:
+            import re, os as _os
+            fname = _os.path.basename(str(file_path))
+            # Remove extension(s) for cleaner matching
+            fname_base = fname
+            for _ext in ['.fits.fz', '.fits', '.fit', '.xisf', '.xifs', '.xif']:
+                if fname_base.lower().endswith(_ext):
+                    fname_base = fname_base[:-len(_ext)]
+                    break
+            # Find all groups of 3+ digits preceded by _ or - and followed by _ or - or end.
+            # Take the LAST match which is most likely the sequence/frame number
+            # (avoids capturing year/date components which appear earlier in the name).
+            # e.g. "AUS-2-CCD_2021-05-07T08-59-46_..._221812_cal" → ['2021', '221812'] → '221812'
+            _all_nums = re.findall(r'[_\-](\d{3,8})(?=[_\-.]|$)', fname_base)
+            if _all_nums:
+                frame_no = _all_nums[-1]
+            else:
+                # Fallback: parenthesized number like (001)
+                m = re.search(r'\((\d{1,8})\)', fname_base)
                 if m:
                     frame_no = m.group(1)
         
@@ -3288,33 +3308,28 @@ def get_file_signature(file_path):
             exptime_rounded = round(float(exptime), 2) if exptime else 0
         except Exception:
             exptime_rounded = 0
-        
+
         # Signature definition (tous types):
         #   - date_obs normalisée
         #   - image_type (LIGHT/BIAS/DARK/FLAT)
         #   - exptime_rounded
         #   - naxis1/naxis2
         #   - binning
-        #   - et pour les poses < 1s: frame_no si disponible (pour distinguer les rafales)
-        if exptime_rounded < 1.0 and frame_no:
-            signature = (
-                date_obs,
-                image_type,
-                exptime_rounded,
-                naxis1,
-                naxis2,
-                binning,
-                frame_no,
-            )
-        else:
-            signature = (
-                date_obs,
-                image_type,
-                exptime_rounded,
-                naxis1,
-                naxis2,
-                binning,
-            )
+        #   - filter, object (pour éviter les faux doublons entre filtres/cibles)
+        #   - frame_no si disponible (pour distinguer les poses consécutives)
+        sig_fields = [
+            date_obs,
+            image_type,
+            exptime_rounded,
+            naxis1,
+            naxis2,
+            binning,
+            filter_name,
+            obj_name,
+        ]
+        if frame_no:
+            sig_fields.append(frame_no)
+        signature = tuple(sig_fields)
         
         # Also return useful info for reporting
         info = {
@@ -9506,9 +9521,15 @@ def analyze_folder_recursive(root_folder, workers=1, check_abort=None):
     _seen_paths = set()  # For case-insensitive deduplication
     extension_counts = {}  # Count files by original extension (preserves case)
     
+    # Folders to skip during scan (output/extraction folders from previous runs)
+    _skip_prefixes = ('extracted_', 'duplicates_extracted', 'astronomical_analysis_',
+                       'fits_originals_', 'duplicates_')
+
     for root, dirs, files in os.walk(folder_path):
         if check_abort and callable(check_abort) and check_abort():
             return None
+        # Exclude output/extraction folders from previous runs
+        dirs[:] = [d for d in dirs if not any(d.startswith(pfx) for pfx in _skip_prefixes)]
         for file in files:
             file_lower = file.lower()
             # Check all extensions (case-insensitive)
@@ -17769,7 +17790,9 @@ if PYQT6_AVAILABLE:
                         # Extraction folder when extract_duplicates is enabled
                         extraction_folder = None
                         if self.options.get('extract_duplicates', False):
-                            extraction_folder = os.path.join(os.path.dirname(str(self.folder_path)),
+                            # normpath removes trailing slashes so dirname always returns the true parent
+                            folder_normalized = os.path.normpath(str(self.folder_path))
+                            extraction_folder = os.path.join(os.path.dirname(folder_normalized),
                                                              "extracted_" + datetime.now().strftime("%Y%m%d_%H%M%S"))
                             os.makedirs(extraction_folder, exist_ok=True)
                             prefer_format = self.options.get('prefer_format', 'xisf')
@@ -17908,7 +17931,9 @@ if PYQT6_AVAILABLE:
                 # Extraction folder (used for moving compressed originals and/or other duplicates)
                 extraction_folder = None
                 if self.options.get('extract_duplicates', False):
-                    extraction_folder = os.path.join(os.path.dirname(str(self.folder_path)),
+                    # normpath removes trailing slashes so dirname always returns the true parent
+                    folder_normalized = os.path.normpath(str(self.folder_path))
+                    extraction_folder = os.path.join(os.path.dirname(folder_normalized),
                                                      "extracted_" + datetime.now().strftime("%Y%m%d_%H%M%S"))
                     os.makedirs(extraction_folder, exist_ok=True)
                     prefer_format = self.options.get('prefer_format', 'xisf')

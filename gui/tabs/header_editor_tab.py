@@ -10,7 +10,10 @@ Integrates header_editor.py for bulk operations.
 """
 
 import os
+import shutil
 import threading
+from pathlib import Path
+from datetime import datetime
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGroupBox,
     QPushButton, QLabel, QLineEdit, QFileDialog, QComboBox,
@@ -29,19 +32,37 @@ from gui.theme import get_mono_font
 try:
     from modules.header_editor import (
         HEADER_FIELDS, HEADER_CATEGORIES,
-        read_header, scan_directory, detect_file_type
+        read_header, scan_directory, detect_file_type,
+        build_filename, get_header_value, read_headers_batch,
+        DEFAULT_FILENAME_PATTERN,
     )
     HEADER_EDITOR_AVAILABLE = True
 except ImportError:
     HEADER_EDITOR_AVAILABLE = False
     HEADER_FIELDS = {}
     HEADER_CATEGORIES = {}
+    DEFAULT_FILENAME_PATTERN = ""
+
+
+def _get_sort_timestamp(header):
+    """Extract a timestamp from header for sorting by DATE-OBS."""
+    if not HEADER_EDITOR_AVAILABLE:
+        return 0.0
+    date_obs = get_header_value(header, 'DATE-OBS')
+    if date_obs:
+        try:
+            dt = datetime.fromisoformat(str(date_obs).replace('Z', '+00:00'))
+            return dt.timestamp()
+        except Exception:
+            pass
+    return 0.0
 
 
 class HeaderEditorTab(QWidget):
     """Header Editor tab - Mass FITS header editing"""
 
     _headers_loaded_signal = pyqtSignal(list, dict)
+    _rename_ready = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -50,7 +71,9 @@ class HeaderEditorTab(QWidget):
         self.worker = None
         self.loaded_files = []
         self.headers_data = {}
+        self._pending_rename_map = {}
         self._headers_loaded_signal.connect(self._on_headers_loaded)
+        self._rename_ready.connect(self._on_rename_ready)
         self._init_ui()
         self._restore_options()
 
@@ -141,7 +164,7 @@ class HeaderEditorTab(QWidget):
         ))
         # Load pattern from settings, or use default
         config = get_config()
-        default_pattern = "$IMAGETYPE$_$TARGETNAME$_$DATETIME$_$FILTER$_$BINNING$_$EXPOSURETIME$s_$ROTATORANGLE$deg_$SENSORTEMP$_$TELESCOPE$_$CAMERA$_$FRAMENR$"
+        default_pattern = "$$IMAGETYPE$$_$$TARGETNAME$$_$$DATETIME$$_$$FILTER$$_$$BINNING$$_$$EXPOSURETIME$$s_$$ROTATORANGLE$$deg_$$SENSORTEMP$$_$$TELESCOPE$$_$$CAMERA$$_$$FRAMENR$$"
         self.pattern_input.setText(config.get('file_naming.pattern', default_pattern))
         self.pattern_input.setFont(get_mono_font(9))
         pattern_row.addWidget(self.pattern_input, 1)
@@ -173,17 +196,37 @@ class HeaderEditorTab(QWidget):
         pattern_layout.addLayout(pattern_row)
 
         tokens_label = QLabel(self._tr(
-            "Tokens: $IMAGETYPE$ $TARGETNAME$ $DATETIME$ $FILTER$ $BINNING$ $EXPOSURETIME$ $ROTATORANGLE$ $SENSORTEMP$ $TELESCOPE$ $CAMERA$ $FRAMENR$ $GAIN$ $OFFSET$",
-            "Tokens: $IMAGETYPE$ $TARGETNAME$ $DATETIME$ $FILTER$ $BINNING$ $EXPOSURETIME$ $ROTATORANGLE$ $SENSORTEMP$ $TELESCOPE$ $CAMERA$ $FRAMENR$ $GAIN$ $OFFSET$"
+            "Tokens: $$IMAGETYPE$$ $$TARGETNAME$$ $$DATETIME$$ $$FILTER$$ $$BINNING$$ $$EXPOSURETIME$$ $$ROTATORANGLE$$ $$SENSORTEMP$$ $$TELESCOPE$$ $$CAMERA$$ $$FRAMENR$$ $$GAIN$$ $$OFFSET$$",
+            "Tokens: $$IMAGETYPE$$ $$TARGETNAME$$ $$DATETIME$$ $$FILTER$$ $$BINNING$$ $$EXPOSURETIME$$ $$ROTATORANGLE$$ $$SENSORTEMP$$ $$TELESCOPE$$ $$CAMERA$$ $$FRAMENR$$ $$GAIN$$ $$OFFSET$$"
         ))
         tokens_label.setStyleSheet("color: #8b95b0; font-size: 9pt;")
         tokens_label.setWordWrap(True)
         pattern_layout.addWidget(tokens_label)
+
+        # Filename preview
+        self.filename_preview = QLabel("")
+        self.filename_preview.setFont(get_mono_font(9))
+        self.filename_preview.setStyleSheet("color: #7a8aaa; padding: 2px 4px;")
+        self.filename_preview.setWordWrap(True)
+        pattern_layout.addWidget(self.filename_preview)
+
         layout.addWidget(pattern_group)
+
+        # Connect signals for live preview updates
+        self.pattern_input.textChanged.connect(self._update_filename_preview)
+        self.table.itemChanged.connect(self._on_table_item_changed)
 
         # ── Buttons ──
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
+
+        rename_btn = QPushButton(self._tr("📛 Rename to NINA Pattern", "📛 Renommer selon Pattern NINA"))
+        rename_btn.setToolTip(self._tr(
+            "Rename all loaded files using the NINA pattern based on their actual header content",
+            "Renommer tous les fichiers chargés avec le pattern NINA basé sur leur contenu de header réel"
+        ))
+        rename_btn.clicked.connect(self._rename_to_pattern)
+        btn_layout.addWidget(rename_btn)
 
         preview_btn = QPushButton(self._tr("👁 Preview Changes", "👁 Prévisualiser Changements"))
         preview_btn.setToolTip(self._tr(
@@ -235,16 +278,16 @@ class HeaderEditorTab(QWidget):
 
         # Map common FITS header keywords to NINA tokens
         header_to_token = {
-            'IMAGETYP': '$IMAGETYPE$', 'FRAME': '$IMAGETYPE$',
-            'OBJECT': '$TARGETNAME$', 'TARGET': '$TARGETNAME$',
-            'DATE-OBS': '$DATETIME$', 'DATE_OBS': '$DATETIME$',
-            'FILTER': '$FILTER$', 'FILTNAME': '$FILTER$',
-            'XBINNING': '$BINNING$', 'BINNING': '$BINNING$',
-            'EXPTIME': '$EXPOSURETIME$', 'EXPOSURE': '$EXPOSURETIME$',
-            'ROTATANG': '$ROTATORANGLE$', 'ROTANGLE': '$ROTATORANGLE$', 'ROTATOR': '$ROTATORANGLE$',
-            'CCD-TEMP': '$SENSORTEMP$', 'CCDTEMP': '$SENSORTEMP$', 'SET-TEMP': '$SENSORTEMP$',
-            'TELESCOP': '$TELESCOPE$', 'INSTRUME': '$CAMERA$', 'CAMERA': '$CAMERA$',
-            'GAIN': '$GAIN$', 'OFFSET': '$OFFSET$', 'BAYOFFST': '$OFFSET$',
+            'IMAGETYP': '$$IMAGETYPE$$', 'FRAME': '$$IMAGETYPE$$',
+            'OBJECT': '$$TARGETNAME$$', 'TARGET': '$$TARGETNAME$$',
+            'DATE-OBS': '$$DATETIME$$', 'DATE_OBS': '$$DATETIME$$',
+            'FILTER': '$$FILTER$$', 'FILTNAME': '$$FILTER$$',
+            'XBINNING': '$$BINNING$$', 'BINNING': '$$BINNING$$',
+            'EXPTIME': '$$EXPOSURETIME$$', 'EXPOSURE': '$$EXPOSURETIME$$',
+            'ROTATANG': '$$ROTATORANGLE$$', 'ROTANGLE': '$$ROTATORANGLE$$', 'ROTATOR': '$$ROTATORANGLE$$',
+            'CCD-TEMP': '$$SENSORTEMP$$', 'CCDTEMP': '$$SENSORTEMP$$', 'SET-TEMP': '$$SENSORTEMP$$',
+            'TELESCOP': '$$TELESCOPE$$', 'INSTRUME': '$$CAMERA$$', 'CAMERA': '$$CAMERA$$',
+            'GAIN': '$$GAIN$$', 'OFFSET': '$$OFFSET$$', 'BAYOFFST': '$$OFFSET$$',
         }
 
         # Get FITS keywords from table rows (column 0 = field name)
@@ -266,6 +309,46 @@ class HeaderEditorTab(QWidget):
             QMessageBox.information(self, self._tr("Pattern", "Pattern"),
                 self._tr("No matching FITS header tokens found in loaded columns.",
                          "Aucun token de header FITS correspondant trouvé dans les colonnes chargées."))
+
+    # ==================================================================
+    # Filename preview
+    # ==================================================================
+
+    def _on_table_item_changed(self, item):
+        """Trigger preview update when a table cell is edited (column 3 = new value)."""
+        if item.column() == 3:
+            self._update_filename_preview()
+
+    def _update_filename_preview(self):
+        """Update the filename preview label based on current headers + new values + pattern."""
+        if not self.headers_data or not HEADER_EDITOR_AVAILABLE:
+            self.filename_preview.setText("")
+            return
+
+        # Build merged header: start from loaded headers, overlay new values from table
+        merged = dict(self.headers_data)
+        for row in range(self.table.rowCount()):
+            field_item = self.table.item(row, 0)
+            new_item = self.table.item(row, 3)
+            if field_item and new_item:
+                new_val = new_item.text().strip()
+                if new_val:
+                    merged[field_item.text()] = new_val
+
+        pattern = self.pattern_input.text().strip()
+        if not pattern:
+            self.filename_preview.setText("")
+            return
+
+        try:
+            preview_name = build_filename(merged, pattern, frame_number=1, extension='.xisf')
+            self.filename_preview.setText(
+                self._tr("Preview: ", "Aperçu: ") + preview_name
+            )
+        except Exception:
+            self.filename_preview.setText(
+                self._tr("Preview: (error)", "Aperçu: (erreur)")
+            )
 
     # ==================================================================
     # Persistence
@@ -333,6 +416,7 @@ class HeaderEditorTab(QWidget):
 
         self.info_label.setText(f"{len(self.loaded_files)} {self._tr('files loaded', 'fichiers chargés')}")
         self._populate_table()
+        self._update_filename_preview()
 
     def _populate_table(self):
         """Populate table with header fields"""
@@ -437,6 +521,133 @@ class HeaderEditorTab(QWidget):
         )
         self.worker.set_single_job(job)
         self.worker.start()
+
+    def _rename_to_pattern(self):
+        """Rename loaded files to NINA-compliant names based on actual header content."""
+        if not self.loaded_files or not HEADER_EDITOR_AVAILABLE:
+            QMessageBox.information(self, self._tr("Info", "Info"),
+                self._tr("Load files first.", "Chargez d'abord des fichiers."))
+            return
+
+        pattern = self.pattern_input.text().strip()
+        if not pattern:
+            QMessageBox.information(self, self._tr("Info", "Info"),
+                self._tr("Enter a filename pattern first.", "Entrez d'abord un pattern de nom de fichier."))
+            return
+
+        self.info_label.setText(self._tr("Reading headers for rename...", "Lecture des headers pour renommage..."))
+
+        def _do_rename_thread():
+            # Read all headers
+            all_headers = {}
+            for fp in self.loaded_files:
+                try:
+                    all_headers[fp] = read_header(fp)
+                except Exception:
+                    all_headers[fp] = {}
+
+            # Group files by target+filter+telescope+imagetype for frame numbering
+            groups = {}
+            for fp in self.loaded_files:
+                h = all_headers.get(fp, {})
+                target = get_header_value(h, 'OBJECT') or 'Unknown'
+                filt = get_header_value(h, 'FILTER') or ''
+                scope = get_header_value(h, 'TELESCOP') or ''
+                imgtype = get_header_value(h, 'IMAGETYP') or ''
+                group_key = f"{target}|{filt}|{scope}|{imgtype}"
+                if group_key not in groups:
+                    groups[group_key] = []
+                groups[group_key].append(fp)
+
+            # Sort within each group by DATE-OBS for sequential frame numbering
+            for group_key in groups:
+                groups[group_key].sort(key=lambda fp: _get_sort_timestamp(all_headers.get(fp, {})))
+
+            # Build rename map
+            rename_map = {}
+            for group_files in groups.values():
+                for idx, fp in enumerate(group_files, 1):
+                    h = all_headers.get(fp, {})
+                    ext = Path(fp).suffix
+                    if fp.lower().endswith('.fits.fz'):
+                        ext = '.fits.fz'
+                    new_name = build_filename(h, pattern, frame_number=idx, extension=ext)
+                    new_path = os.path.join(os.path.dirname(fp), new_name)
+                    rename_map[fp] = new_path
+
+            self._pending_rename_map = rename_map
+            self._rename_ready.emit()
+
+        threading.Thread(target=_do_rename_thread, daemon=True).start()
+
+    def _on_rename_ready(self):
+        """Show rename preview dialog and execute on confirm."""
+        rename_map = self._pending_rename_map
+        if not rename_map:
+            self.info_label.setText(self._tr("No files to rename.", "Aucun fichier à renommer."))
+            return
+
+        # Build preview text
+        lines = []
+        for old_path, new_path in rename_map.items():
+            old_name = os.path.basename(old_path)
+            new_name = os.path.basename(new_path)
+            if old_name != new_name:
+                lines.append(f"{old_name}\n  -> {new_name}")
+
+        if not lines:
+            QMessageBox.information(self, self._tr("Info", "Info"),
+                self._tr("All files already match the pattern.",
+                         "Tous les fichiers correspondent déjà au pattern."))
+            self.info_label.setText(f"{len(self.loaded_files)} {self._tr('files loaded', 'fichiers chargés')}")
+            return
+
+        preview_text = "\n\n".join(lines[:50])
+        if len(lines) > 50:
+            preview_text += f"\n\n... {self._tr(f'and {len(lines) - 50} more', f'et {len(lines) - 50} de plus')}"
+
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle(self._tr("Rename Preview", "Aperçu Renommage"))
+        msg_box.setText(self._tr(
+            f"Rename {len(lines)} files?",
+            f"Renommer {len(lines)} fichiers?"
+        ))
+        msg_box.setDetailedText(preview_text)
+        msg_box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        msg_box.setDefaultButton(QMessageBox.StandardButton.No)
+
+        if msg_box.exec() != QMessageBox.StandardButton.Yes:
+            self.info_label.setText(f"{len(self.loaded_files)} {self._tr('files loaded', 'fichiers chargés')}")
+            return
+
+        # Execute renames
+        renamed = 0
+        errors = 0
+        new_files = []
+        for old_path, new_path in rename_map.items():
+            if old_path == new_path or os.path.basename(old_path) == os.path.basename(new_path):
+                new_files.append(old_path)
+                continue
+            try:
+                # Avoid collision
+                if os.path.exists(new_path):
+                    base, ext = os.path.splitext(new_path)
+                    counter = 2
+                    while os.path.exists(f"{base}_{counter}{ext}"):
+                        counter += 1
+                    new_path = f"{base}_{counter}{ext}"
+                shutil.move(old_path, new_path)
+                new_files.append(new_path)
+                renamed += 1
+            except Exception:
+                new_files.append(old_path)
+                errors += 1
+
+        self.loaded_files = new_files
+        err_msg = f" ({errors} errors)" if errors else ""
+        self.info_label.setText(
+            self._tr(f"Renamed {renamed} files{err_msg}. {len(self.loaded_files)} files loaded.",
+                     f"{renamed} fichiers renommés{err_msg}. {len(self.loaded_files)} fichiers chargés."))
 
     def _on_edit_finished(self, success, message, result):
         if success and result:
