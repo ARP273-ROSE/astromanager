@@ -1253,6 +1253,7 @@ class AstroManagerWindow(QMainWindow):
                 <li><b>Édition en masse :</b> Modifiez les headers FITS/XISF de centaines de fichiers</li>
                 <li><b>Catégories :</b> Acquisition, Caméra, Filtre, Image, Télescope, etc.</li>
                 <li><b>Pattern NINA :</b> Générateur de pattern de nom de fichier compatible NINA</li>
+                <li><b>Renommage auto :</b> Après modification des headers, proposition automatique de renommer les fichiers selon le pattern NINA configuré</li>
             </ul>
             <h3>4. Gestion Flats</h3>
             <ul>
@@ -1322,6 +1323,7 @@ class AstroManagerWindow(QMainWindow):
                 <li><b>Mass editing:</b> Modify FITS/XISF headers for hundreds of files at once</li>
                 <li><b>Categories:</b> Acquisition, Camera, Filter, Image, Telescope, etc.</li>
                 <li><b>NINA pattern:</b> NINA-compatible filename pattern generator</li>
+                <li><b>Auto-rename:</b> After header changes, automatically proposes renaming files to match the configured NINA pattern</li>
             </ul>
             <h3>4. Flat Management</h3>
             <ul>
