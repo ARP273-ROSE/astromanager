@@ -13370,11 +13370,10 @@ def generate_latex_report(data_by_target, global_data, output_folder):
                         date_str = sorted_dates[0]
                         night_data = files_by_date[date_str]
                         display_date = format_night_display(date_str)
-                        f.write(f"\\paragraph{{{display_date}}}\n")
+                        f.write(f"\\paragraph{{{display_date}}}~\\\\\n")
                         _tot_obs_lbl = "Temps total d'observation" if _is_fr else "Total observation time"
                         _num_img_lbl = "Nombre d'images" if _is_fr else "Number of images"
-                        f.write(f"{_tot_obs_lbl}: {format_time(night_data['total_time'])}\n")
-                        f.write(f"{_num_img_lbl}: {night_data['total_files']}\n\n")
+                        f.write(f"{_tot_obs_lbl}: {format_time(night_data['total_time'])} \\hfill {_num_img_lbl}: {night_data['total_files']}\n\n")
 
                         # Filter breakdown for all observations
                         if night_data['filters']:
@@ -13522,11 +13521,10 @@ def generate_latex_report(data_by_target, global_data, output_folder):
                             # Check if we need a page break (only if not enough space)
                             # Reserve space for the entire night section to avoid page breaks
                             f.write("\\needspace{8cm}\n")
-                            f.write(f"\\paragraph{{{display_date}}}\n")
+                            f.write(f"\\paragraph{{{display_date}}}~\\\\\n")
                             _tot_obs_lbl2 = "Temps total d'observation" if _is_fr else "Total observation time"
                             _num_img_lbl2 = "Nombre d'images" if _is_fr else "Number of images"
-                            f.write(f"{_tot_obs_lbl2}: {format_time(night_data['total_time'])}\n")
-                            f.write(f"{_num_img_lbl2}: {night_data['total_files']}\n\n")
+                            f.write(f"{_tot_obs_lbl2}: {format_time(night_data['total_time'])} \\hfill {_num_img_lbl2}: {night_data['total_files']}\n\n")
 
 
                             # Filter breakdown for this night
