@@ -1132,9 +1132,12 @@ def convert_batch(source_dir, conversion_type, profile='zlib_6',
 
     # Find files
     files = []
-    skip_dirs = {'astronomical_analysis_', 'duplicates_', 'fits_originals_'}
+    skip_dirs = {'astronomical_analysis_', 'duplicates_', 'fits_originals_', 'extracted_', 'duplicates_extracted'}
+    _skip_suffixes_mod = ('_fits_fz_backup',)
     for root, dirs, filenames in os.walk(source_dir):
-        dirs[:] = [d for d in dirs if not any(d.startswith(s) for s in skip_dirs)]
+        dirs[:] = [d for d in dirs
+                   if not any(d.startswith(s) for s in skip_dirs)
+                   and not any(d.endswith(sfx) for sfx in _skip_suffixes_mod)]
         for fname in filenames:
             fl = fname.lower()
             if any(fl.endswith(ext) for ext in extensions):

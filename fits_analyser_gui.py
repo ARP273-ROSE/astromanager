@@ -1431,9 +1431,12 @@ def optimize_storage(source_root, extraction_folder, prefer_format='xisf', compr
     all_files = []
     fits_extensions = ('.fit', '.fits', '.fits.fz', '.xisf', '.xifs', '.xif')
     skip_folders = ['astronomical_analysis_', 'duplicates_', 'duplicates_extracted', 'fits_originals_', 'extracted_', os.path.basename(extraction_folder)]
-    
+    _skip_suffixes_ext = ('_fits_fz_backup',)
+
     for root, dirs, files in os.walk(source_root):
-        dirs[:] = [d for d in dirs if not any(d.startswith(skip) for skip in skip_folders)]
+        dirs[:] = [d for d in dirs
+                   if not any(d.startswith(skip) for skip in skip_folders)
+                   and not any(d.endswith(sfx) for sfx in _skip_suffixes_ext)]
         for file in files:
             if file.lower().endswith(fits_extensions):
                 all_files.append(os.path.join(root, file))
@@ -1460,12 +1463,12 @@ def optimize_storage(source_root, extraction_folder, prefer_format='xisf', compr
         signature, info = get_file_signature(file_path)
         ext = get_extension(file_path)
         
-        if signature and (signature[0] or signature[1]):  # Has date or object
+        if signature and signature[0]:  # Has valid DATE-OBS
             if signature not in signature_groups:
                 signature_groups[signature] = []
             signature_groups[signature].append((file_path, ext, info))
         else:
-            # No signature, treat as unique
+            # No valid timestamp, treat as unique (avoid false positives)
             unique_sig = (file_path,)  # Use path as unique key
             signature_groups[unique_sig] = [(file_path, ext, info)]
     
@@ -1898,12 +1901,15 @@ def compress_fits_to_xisf(source_root, backup_folder=None, workers=1, add_to_dup
     
     # Find all uncompressed FITS files
     fits_files = []
+    _skip_suffixes_comp = ('_fits_fz_backup',)
     for root, dirs, files in os.walk(source_root):
         # Skip backup, analysis and extraction folders
         skip_folders = ['astronomical_analysis_', 'duplicates_', 'duplicates_extracted', 'fits_originals_', 'extracted_']
         if backup_folder:
             skip_folders.append(os.path.basename(backup_folder))
-        dirs[:] = [d for d in dirs if not any(d.startswith(skip) for skip in skip_folders)]
+        dirs[:] = [d for d in dirs
+                   if not any(d.startswith(skip) for skip in skip_folders)
+                   and not any(d.endswith(sfx) for sfx in _skip_suffixes_comp)]
         
         for file in files:
             file_lower = file.lower()
@@ -2959,20 +2965,21 @@ def get_file_signature(file_path):
     """
     Extract a unique signature from a FITS/XISF file based on header metadata.
     This allows detecting duplicates even across different folders or with different names.
-    
-    The signature is based on:
-    - DATE-OBS: Exact observation timestamp
-    - OBJECT: Target name
-    - EXPTIME: Exposure duration
-    - FILTER: Filter used
-    - INSTRUMENT: Camera/instrument
+
+    The signature tuple contains (in order):
+    - DATE-OBS: Exact observation timestamp (normalized)
+    - IMAGE_TYPE: LIGHT/FLAT/DARK/BIAS
+    - EXPTIME: Exposure duration (rounded to 2 decimals)
     - NAXIS1/NAXIS2: Image dimensions
-    - CCD-TEMP: Sensor temperature (if available)
-    - GAIN/EGAIN: Camera gain setting
-    - FRAME/IMAGENUM: Frame number if available
-    
+    - BINNING: e.g. '1x1'
+    - FILTER: Filter name (normalized, uppercased)
+    - OBJECT: Target name (uppercased)
+    - INSTRUMENT: Camera/instrument (uppercased)
+    - TELESCOPE: Telescope name (uppercased)
+    - FRAME_NO: Frame/sequence number (appended only if available)
+
     Two files with identical signatures are considered duplicates (same observation).
-    
+
     Returns: (signature_tuple, header_info_dict) or (None, None) if unreadable
     """
     try:
@@ -2985,9 +2992,10 @@ def get_file_signature(file_path):
             #   - date_obs normalisée
             #   - type d'image
             #   - temps de pose arrondi
-            #   - résolution
+            #   - résolution (naxis1/naxis2)
             #   - binning
             #   - filter, object (pour éviter les faux doublons entre filtres/cibles)
+            #   - instrument, telescope (pour éviter les faux doublons entre setups)
             #   - frame_no si disponible (pour distinguer les rafales/poses consécutives)
             try:
                 exptime_val = cached_info.get('exptime', 0)
@@ -3006,6 +3014,11 @@ def get_file_signature(file_path):
             if not binning and naxis1 and naxis2:
                 binning = '1x1'
 
+            instrument_c = (cached_info.get('instrument', '') or '')
+            instrument_c = instrument_c.upper() if instrument_c and instrument_c != 'Unknown' else ''
+            telescope_c = (cached_info.get('telescope', '') or '')
+            telescope_c = telescope_c.upper() if telescope_c and telescope_c != 'Unknown' else ''
+
             sig_fields = [
                 cached_info.get('date_obs', ''),
                 image_type,
@@ -3015,6 +3028,8 @@ def get_file_signature(file_path):
                 binning,
                 filter_name_c,
                 obj_name_c,
+                instrument_c,
+                telescope_c,
             ]
             if frame_no:
                 sig_fields.append(frame_no)
@@ -3309,6 +3324,10 @@ def get_file_signature(file_path):
         except Exception:
             exptime_rounded = 0
 
+        # Normalize instrument/telescope for signature
+        instrument_norm = instrument  # already uppercased above
+        telescope_norm = (telescope.upper() if telescope and telescope != 'Unknown' else '')
+
         # Signature definition (tous types):
         #   - date_obs normalisée
         #   - image_type (LIGHT/BIAS/DARK/FLAT)
@@ -3316,6 +3335,7 @@ def get_file_signature(file_path):
         #   - naxis1/naxis2
         #   - binning
         #   - filter, object (pour éviter les faux doublons entre filtres/cibles)
+        #   - instrument, telescope (pour éviter les faux doublons entre setups)
         #   - frame_no si disponible (pour distinguer les poses consécutives)
         sig_fields = [
             date_obs,
@@ -3326,6 +3346,8 @@ def get_file_signature(file_path):
             binning,
             filter_name,
             obj_name,
+            instrument_norm,
+            telescope_norm,
         ]
         if frame_no:
             sig_fields.append(frame_no)
@@ -3375,8 +3397,8 @@ def remove_compressed_duplicates(file_list, check_abort=None):
         - They are in different folders (e.g., backup copies)
         - They have different extensions (e.g., compressed versions)
         
-        Signature is based on: DATE-OBS, OBJECT, EXPTIME, FILTER, INSTRUMENT,
-        NAXIS1, NAXIS2, CCD-TEMP, GAIN, FRAME, BINNING
+        Signature is based on: DATE-OBS, IMAGE_TYPE, EXPTIME, NAXIS1, NAXIS2,
+        BINNING, FILTER, OBJECT, INSTRUMENT, TELESCOPE, FRAME_NO
     
     This ensures NO duplicate observations are counted in statistics,
     while preserving the highest quality version of each file.
@@ -3591,7 +3613,7 @@ def remove_compressed_duplicates(file_list, check_abort=None):
                 alt_signature, alt_info = get_file_signature(alt_path)
                 if alt_signature is not None:
                     # Alternative is readable! Use it instead
-                    if alt_signature[0] or alt_signature[1]:
+                    if alt_signature[0]:  # Has valid DATE-OBS
                         if alt_signature not in signature_groups:
                             signature_groups[alt_signature] = []
                         signature_groups[alt_signature].append((alt_path, alt_ext, alt_info))
@@ -3616,14 +3638,14 @@ def remove_compressed_duplicates(file_list, check_abort=None):
                 # No readable alternative found, keep original anyway
                 unreadable_files.append(file_path)
         else:
-            # Only consider as duplicate if signature has meaningful content
-            # (not just empty/default values)
-            if signature[0] or signature[1]:  # Has date or object name
+            # Only consider as duplicate if signature has a valid DATE-OBS.
+            # Without a timestamp the risk of false positives is too high.
+            if signature[0]:  # Has date_obs
                 if signature not in signature_groups:
                     signature_groups[signature] = []
                 signature_groups[signature].append((file_path, ext, info))
             else:
-                # No meaningful signature, keep file
+                # No meaningful timestamp, keep file (treat as unique)
                 unreadable_files.append(file_path)
     
     # Select best file from each signature group
@@ -9524,12 +9546,15 @@ def analyze_folder_recursive(root_folder, workers=1, check_abort=None):
     # Folders to skip during scan (output/extraction folders from previous runs)
     _skip_prefixes = ('extracted_', 'duplicates_extracted', 'astronomical_analysis_',
                        'fits_originals_', 'duplicates_')
+    _skip_suffixes = ('_fits_fz_backup',)
 
     for root, dirs, files in os.walk(folder_path):
         if check_abort and callable(check_abort) and check_abort():
             return None
         # Exclude output/extraction folders from previous runs
-        dirs[:] = [d for d in dirs if not any(d.startswith(pfx) for pfx in _skip_prefixes)]
+        dirs[:] = [d for d in dirs
+                   if not any(d.startswith(pfx) for pfx in _skip_prefixes)
+                   and not any(d.endswith(sfx) for sfx in _skip_suffixes)]
         for file in files:
             file_lower = file.lower()
             # Check all extensions (case-insensitive)

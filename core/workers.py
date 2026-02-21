@@ -990,7 +990,13 @@ class UnifiedWorker(QThread):
         # If no explicit file list, scan source folder
         if not files and source_folder:
             files = []
-            for root, _, filenames in os.walk(source_folder):
+            _skip_pfx = ('extracted_', 'duplicates_extracted', 'astronomical_analysis_',
+                          'fits_originals_', 'duplicates_')
+            _skip_sfx = ('_fits_fz_backup',)
+            for root, dirs, filenames in os.walk(source_folder):
+                dirs[:] = [d for d in dirs
+                           if not any(d.startswith(p) for p in _skip_pfx)
+                           and not any(d.endswith(s) for s in _skip_sfx)]
                 for fn in filenames:
                     ext = fn.lower()
                     if ext.endswith(('.fits', '.fit', '.xisf', '.fz')):
