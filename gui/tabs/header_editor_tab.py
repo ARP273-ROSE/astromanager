@@ -652,7 +652,21 @@ class HeaderEditorTab(QWidget):
     def _on_edit_finished(self, success, message, result):
         if success and result:
             modified = result.get('modified', 0)
+            signals.headers_modified.emit(self.loaded_files)
+
+            # Propose to rename files if a pattern is set
+            pattern = self.pattern_input.text().strip()
+            if modified > 0 and pattern:
+                reply = QMessageBox.question(self, self._tr("Rename files?", "Renommer les fichiers ?"),
+                    self._tr(
+                        f"Modified {modified} files successfully.\n\n"
+                        f"Do you want to rename files to match the NINA pattern?",
+                        f"{modified} fichiers modifiés avec succès.\n\n"
+                        f"Voulez-vous renommer les fichiers selon le pattern NINA ?"))
+                if reply == QMessageBox.StandardButton.Yes:
+                    self._rename_to_pattern()
+                    return
+
             QMessageBox.information(self, self._tr("Done", "Terminé"),
                 self._tr(f"Modified {modified} files successfully",
                          f"{modified} fichiers modifiés avec succès"))
-            signals.headers_modified.emit(self.loaded_files)
