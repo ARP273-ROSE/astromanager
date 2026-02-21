@@ -1108,7 +1108,7 @@ class UnifiedWorker(QThread):
 
         results = write_headers_batch(files, changes, progress_callback=progress_cb)
 
-        modified = sum(1 for r in results if r.get('success', False))
+        modified = sum(1 for v in results.values() if v)
         errors = total - modified
 
         print(f"\n✅ Header editing complete: {modified}/{total} modified, {errors} errors")
