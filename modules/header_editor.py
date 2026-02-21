@@ -1062,8 +1062,9 @@ def _write_xisf_header(filepath: str, changes: Dict[str, Any]) -> bool:
             if key in existing_keywords:
                 existing_keywords[key].set('value', xisf_value)
             else:
-                # Create new FITSKeyword element
-                new_elem = ET.SubElement(image_elem, f'{{{ns}}}FITSKeyword')
+                # Create new FITSKeyword element (use std ET — defusedxml has no SubElement)
+                import xml.etree.ElementTree as _StdET
+                new_elem = _StdET.SubElement(image_elem, f'{{{ns}}}FITSKeyword')
                 new_elem.set('name', key)
                 new_elem.set('value', xisf_value)
                 new_elem.set('comment', '')
