@@ -94,6 +94,8 @@ class ConfigManager:
                 'version': '1.0.0',
                 'language': 'auto',
                 'theme': 'cosmic_dark',
+                'check_updates_on_startup': True,
+                'update_check_interval_hours': 24,
             },
             'system': {
                 'workers': 0,  # Auto-detect
