@@ -10,6 +10,7 @@ application:
   language: "auto"  # Options: auto, en, fr
   theme: "cosmic_dark"
   check_updates_on_startup: true  # Check for updates when the application starts
+  update_check_interval_hours: 24  # Minimum hours between automatic update checks
 
 system:
   workers: 0  # 0 = auto-detect based on CPU cores and RAM

@@ -40,8 +40,6 @@ from core import __version__
 class AstroManagerWindow(QMainWindow):
     """Main application window"""
 
-    _update_result_signal = pyqtSignal(object)
-    _update_error_signal = pyqtSignal(str)
     _download_done_signal = pyqtSignal(bool, str)
 
     def __init__(self):
@@ -359,9 +357,7 @@ class AstroManagerWindow(QMainWindow):
         signals.analysis_progress.connect(self._on_progress)
         signals.analysis_completed.connect(self._on_analysis_completed)
 
-        # Update signals (thread-safe)
-        self._update_result_signal.connect(self._on_update_result)
-        self._update_error_signal.connect(self._on_update_error)
+        # Download completion signal (thread-safe)
         self._download_done_signal.connect(self._on_download_done)
 
     def _init_bug_reporter(self):
@@ -649,42 +645,52 @@ class AstroManagerWindow(QMainWindow):
     # =========================================================================
 
     def _check_for_updates(self, silent=False):
-        """Check for updates via GitHub Releases API"""
+        """Check for updates via GitHub Releases API.
+
+        Args:
+            silent: If True, only show a status bar message on update found
+                    and suppress all dialogs on no-update / error.
+        """
+        from core.updater import UpdateChecker, UpdateWorker
         self._update_silent = silent
 
-        def _worker():
-            try:
-                from modules.updater import check_for_update
-                result = check_for_update(__version__)
-                self._update_result_signal.emit(result)
-            except Exception as e:
-                self._update_error_signal.emit(str(e))
+        checker = UpdateChecker(__version__, self.config)
 
-        t = threading.Thread(target=_worker, daemon=True)
-        t.start()
+        # Manual check: ignore interval throttle and skipped version
+        if not silent:
+            checker.clear_skipped_version()
 
-    def _on_update_result(self, result):
-        """Handle update check result (called on main thread via signal)"""
-        if result is not None:
-            if self._update_silent:
-                msg = self._tr(
-                    f"🔄 Update available: v{result['version']} — Help > Check for Updates",
-                    f"🔄 Mise à jour disponible : v{result['version']} — Aide > Vérifier les mises à jour"
-                )
-                self.status_bar.showMessage(msg, 15000)
-            else:
-                self._show_update_dialog(result)
+        self._update_worker = UpdateWorker(
+            checker, respect_interval=silent, parent=self)
+        self._update_worker.update_found.connect(self._on_update_found)
+        self._update_worker.no_update.connect(self._on_no_update)
+        self._update_worker.check_failed.connect(self._on_update_error)
+        self._update_worker.start()
+
+    def _on_update_found(self, result):
+        """Handle update available (called on main thread via signal)."""
+        if self._update_silent:
+            v = result['latest_version']
+            msg = self._tr(
+                f"Update available: v{v} — Help > Check for Updates",
+                f"Mise à jour disponible : v{v} — Aide > Vérifier les mises à jour"
+            )
+            self.status_bar.showMessage(msg, 15000)
         else:
-            if not self._update_silent:
-                QMessageBox.information(self,
-                    self._tr("Updates", "Mises à jour"),
-                    self._tr(
-                        f"You are up to date (v{__version__}).",
-                        f"Vous êtes à jour (v{__version__})."
-                    ))
+            self._show_update_dialog(result)
+
+    def _on_no_update(self):
+        """Handle no-update result."""
+        if not self._update_silent:
+            QMessageBox.information(self,
+                self._tr("Updates", "Mises à jour"),
+                self._tr(
+                    f"You are up to date (v{__version__}).",
+                    f"Vous êtes à jour (v{__version__})."
+                ))
 
     def _on_update_error(self, message):
-        """Handle update check error"""
+        """Handle update check error."""
         if not self._update_silent:
             QMessageBox.warning(self,
                 self._tr("Update Check Failed", "Vérification échouée"),
@@ -694,85 +700,26 @@ class AstroManagerWindow(QMainWindow):
                 ))
 
     def _show_update_dialog(self, release_info):
-        """Show update available dialog with changelog"""
-        from modules.updater import get_changelog
+        """Show update available dialog with changelog."""
+        from gui.dialogs.update_dialog import UpdateDialog
 
-        changelog = get_changelog(release_info)
-        date = release_info.get('date', '')[:10]
-        is_frozen = getattr(sys, 'frozen', False)
-
-        dialog = QDialog(self)
-        dialog.setWindowTitle(self._tr("Update Available", "Mise à jour disponible"))
-        dialog.setMinimumSize(500, 350)
-        layout = QVBoxLayout(dialog)
-
-        header = QLabel(self._tr(
-            f"<h3>AstroManager v{release_info['version']} is available!</h3>"
-            f"<p>Current version: v{__version__} → New version: v{release_info['version']}"
-            f"{' (' + date + ')' if date else ''}</p>",
-            f"<h3>AstroManager v{release_info['version']} est disponible !</h3>"
-            f"<p>Version actuelle : v{__version__} → Nouvelle version : v{release_info['version']}"
-            f"{' (' + date + ')' if date else ''}</p>"
-        ))
-        header.setWordWrap(True)
-        layout.addWidget(header)
-
-        if is_frozen:
-            frozen_note = QLabel(self._tr(
-                "<p><i>You are running the standalone .exe version.<br>"
-                "Please download the new version from GitHub and replace your current installation.</i></p>",
-                "<p><i>Vous utilisez la version .exe autonome.<br>"
-                "Veuillez télécharger la nouvelle version depuis GitHub et remplacer votre installation actuelle.</i></p>"
-            ))
-            frozen_note.setWordWrap(True)
-            frozen_note.setStyleSheet(f"color: {COLORS.get('accent_orange', '#FFA500')};")
-            layout.addWidget(frozen_note)
-
-        if changelog:
-            changelog_label = QLabel(self._tr("Changelog:", "Notes de version :"))
-            changelog_label.setStyleSheet("font-weight: bold;")
-            layout.addWidget(changelog_label)
-
-            changelog_text = QTextEdit()
-            changelog_text.setReadOnly(True)
-            changelog_text.setPlainText(changelog)
-            changelog_text.setMaximumHeight(180)
-            layout.addWidget(changelog_text)
-
-        btn_layout = QHBoxLayout()
-
-        if not is_frozen:
-            install_btn = QPushButton(self._tr(
-                "Download and Install", "Télécharger et installer"))
-            install_btn.setStyleSheet(
-                f"background-color: {COLORS['accent_cyan']}; color: white; "
-                f"font-weight: bold; padding: 6px 16px;")
-            btn_layout.addWidget(install_btn)
-            install_btn.clicked.connect(lambda: (dialog.accept(), self._do_update(release_info)))
-
-        github_btn = QPushButton(self._tr(
-            "Download from GitHub" if is_frozen else "View on GitHub",
-            "Télécharger depuis GitHub" if is_frozen else "Voir sur GitHub"))
-        if is_frozen:
-            github_btn.setStyleSheet(
-                f"background-color: {COLORS['accent_cyan']}; color: white; "
-                f"font-weight: bold; padding: 6px 16px;")
-        later_btn = QPushButton(self._tr("Later", "Plus tard"))
-
-        btn_layout.addWidget(github_btn)
-        btn_layout.addWidget(later_btn)
-        layout.addLayout(btn_layout)
-
-        github_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(release_info['url'])))
-        later_btn.clicked.connect(dialog.reject)
-
+        dialog = UpdateDialog(release_info, __version__,
+                              lang=self.lang, parent=self)
         dialog.exec()
+
+        if dialog.action == 'install':
+            self._do_update(release_info)
+        elif dialog.action == 'skip':
+            from core.updater import UpdateChecker
+            checker = UpdateChecker(__version__, self.config)
+            checker.skip_version(release_info['latest_version'])
 
     def _do_update(self, release_info):
         """Download and apply update (source installs only, not frozen .exe)"""
         # Frozen .exe cannot self-update — redirect to GitHub
+        release_url = release_info.get('release_url') or release_info.get('url', '')
         if getattr(sys, 'frozen', False):
-            QDesktopServices.openUrl(QUrl(release_info['url']))
+            QDesktopServices.openUrl(QUrl(release_url))
             return
 
         reply = QMessageBox.question(self,
@@ -796,7 +743,7 @@ class AstroManagerWindow(QMainWindow):
             try:
                 url = release_info['download_url']
                 if not url.startswith('https://github.com/') and not url.startswith('https://api.github.com/'):
-                    self._update_error_signal.emit("Invalid download URL")
+                    self._download_done_signal.emit(False, "Invalid download URL")
                     return
                 from modules.updater import download_and_apply_update
                 download_and_apply_update(url, app_dir)
@@ -858,8 +805,8 @@ class AstroManagerWindow(QMainWindow):
         cb_updates = QCheckBox()
         cb_updates.setChecked(self.config.get('application.check_updates_on_startup', True))
         cb_updates.setToolTip(self._tr(
-            "Automatically check for updates when the application starts",
-            "Vérifier automatiquement les mises à jour au démarrage de l'application"))
+            "Automatically check for updates on startup (single HTTPS call to GitHub, max once per day)",
+            "Vérifier automatiquement les mises à jour au démarrage (un seul appel HTTPS vers GitHub, max une fois par jour)"))
         gen_form.addRow(self._tr("Check updates on startup:", "Vérifier mises à jour au démarrage:"), cb_updates)
 
         layout.addWidget(gen_group)
@@ -1297,6 +1244,13 @@ class AstroManagerWindow(QMainWindow):
                 <li><b>Données :</b> Configuration et base de données restent dans <code>~/.astromanager/</code></li>
                 <li><b>Multiplateforme :</b> Fonctionne sur Windows, Linux et macOS</li>
             </ul>
+            <h3>10. Mises à jour</h3>
+            <ul>
+                <li><b>Automatique :</b> Vérifie les nouvelles versions au démarrage (opt-in dans Réglages)</li>
+                <li><b>Manuel :</b> Aide > Vérifier les mises à jour</li>
+                <li><b>Ignorer :</b> Bouton « Ignorer cette version » pour ne plus être notifié</li>
+                <li><b>Fréquence :</b> Un seul appel HTTPS vers GitHub, max une fois par 24h</li>
+            </ul>
             <h3>Raccourcis</h3>
             <p>Ctrl+, = Réglages | Ctrl+Q = Quitter | Ctrl+` = Console | F1 = Aide</p>
             """)
@@ -1366,6 +1320,13 @@ class AstroManagerWindow(QMainWindow):
                 <li><b>Prerequisite:</b> PyInstaller (<code>pip install pyinstaller</code>)</li>
                 <li><b>Data:</b> Configuration and database remain in <code>~/.astromanager/</code></li>
                 <li><b>Cross-platform:</b> Works on Windows, Linux, and macOS</li>
+            </ul>
+            <h3>10. Updates</h3>
+            <ul>
+                <li><b>Automatic:</b> Checks for new versions on startup (opt-in via Settings)</li>
+                <li><b>Manual:</b> Help > Check for Updates</li>
+                <li><b>Skip:</b> "Skip This Version" button to dismiss specific releases</li>
+                <li><b>Frequency:</b> Single HTTPS call to GitHub, max once per 24 hours</li>
             </ul>
             <h3>Shortcuts</h3>
             <p>Ctrl+, = Settings | Ctrl+Q = Quit | Ctrl+` = Console | F1 = Help</p>

@@ -82,6 +82,14 @@
 - File organization with presets (by type, date, target, custom)
 - SSD vs HDD detection (Windows WMI, Linux /sys/block, macOS diskutil)
 
+### Automatic Update Checker
+- Checks GitHub Releases for new versions (opt-in, disabled by default)
+- Single HTTPS call to GitHub API, max once per 24 hours
+- Non-blocking background check via QThread
+- Skip This Version option to dismiss specific releases
+- Manual check via Help > Check for Updates
+- Fails silently with no internet (5-second timeout)
+
 ### Modern Interface
 - Cosmic dark theme with neon accents
 - 8-tab organized workflow
@@ -231,7 +239,7 @@ Access via **Tools -> Settings** or **Ctrl+,**
 
 | Section | Settings |
 |---------|----------|
-| **General** | Language (auto/en/fr) |
+| **General** | Language (auto/en/fr), Check for updates on startup |
 | **Observatory** | Latitude, Longitude, Elevation, Timezone |
 | **Performance** | Workers (0=auto), Batch size |
 | **Compression** | Default profile, Delete source, Verify integrity |
@@ -315,11 +323,15 @@ astromanager/
 │   ├── config.py                # Configuration manager (YAML)
 │   ├── database.py              # SQLite database (targets, weather, cache)
 │   ├── workers.py               # Unified worker architecture (QThread)
-│   └── signals.py               # Global signal bus (PyQt6 signals)
+│   ├── signals.py               # Global signal bus (PyQt6 signals)
+│   └── updater.py               # Update checker coordinator (interval, QThread)
 │
 ├── gui/
 │   ├── main_window.py           # Main window (menu, tabs, console)
 │   ├── theme.py                 # Cosmic theme engine + filter normalization
+│   ├── dialogs/
+│   │   ├── bug_report_dialog.py # Crash report & manual bug report dialogs
+│   │   └── update_dialog.py     # Update notification dialog
 │   └── tabs/
 │       ├── analysis_tab.py      # Analysis tab
 │       ├── compression_tab.py   # Compression tab
@@ -338,6 +350,7 @@ astromanager/
 │   ├── weather_api.py           # Open-Meteo weather client
 │   ├── observation_history.py    # Observation history stats + export/import
 │   ├── bug_reporter.py          # Anonymous crash reporting
+│   ├── updater.py               # GitHub update checker & installer
 │   └── file_organizer.py        # File organization with presets
 │
 ├── database/
