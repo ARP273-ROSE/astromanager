@@ -191,6 +191,8 @@ class AstroManagerWindow(QMainWindow):
         from gui.tabs.history_tab import HistoryTab
         from gui.tabs.database_tab import DatabaseTab
         from gui.tabs.asiair_import_tab import ASIAIRImportTab
+        from gui.tabs.pixinsight_tab import PixInsightTab
+        from gui.tabs.mount_tab import MountTab
 
         self.analysis_tab = AnalysisTab()
         self.compression_tab = CompressionTab()
@@ -201,6 +203,8 @@ class AstroManagerWindow(QMainWindow):
         self.database_tab = DatabaseTab()
         self.disk_tab = DiskSpaceTab()
         self.asiair_tab = ASIAIRImportTab()
+        self.pixinsight_tab = PixInsightTab()
+        self.mount_tab = MountTab()
 
         self.tab_widget.addTab(self.analysis_tab,
             self._tr("📊 Analysis", "📊 Analyse"))
@@ -214,6 +218,10 @@ class AstroManagerWindow(QMainWindow):
             self._tr("📸 Flat Manager", "📸 Gestion Flats"))
         self.tab_widget.addTab(self.target_tab,
             self._tr("🎯 Target Tracking", "🎯 Suivi Cibles"))
+        self.tab_widget.addTab(self.pixinsight_tab,
+            self._tr("🔬 PixInsight", "🔬 PixInsight"))
+        self.tab_widget.addTab(self.mount_tab,
+            self._tr("🔭 Mount", "🔭 Monture"))
         self.tab_widget.addTab(self.history_tab,
             self._tr("📈 History", "📈 Historique"))
         self.tab_widget.addTab(self.database_tab,

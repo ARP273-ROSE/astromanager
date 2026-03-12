@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGroupBox,
     QPushButton, QLabel, QLineEdit, QFileDialog, QComboBox,
     QTableWidget, QTableWidgetItem, QHeaderView, QTextEdit,
-    QMessageBox, QAbstractItemView
+    QMessageBox, QAbstractItemView, QCheckBox
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QFont, QColor
@@ -218,6 +218,17 @@ class HeaderEditorTab(QWidget):
 
         # ── Buttons ──
         btn_layout = QHBoxLayout()
+
+        self.backup_checkbox = QCheckBox(self._tr("Create .bak backups", "Créer des backups .bak"))
+        self.backup_checkbox.setToolTip(self._tr(
+            "Create a .bak backup of each file before modifying its header.\n"
+            "Disable to avoid cluttering your folder with backup files.",
+            "Créer un backup .bak de chaque fichier avant de modifier son header.\n"
+            "Désactiver pour ne pas encombrer votre dossier avec des fichiers de sauvegarde."
+        ))
+        self.backup_checkbox.setChecked(self.config.get('header_editor.create_backup', False))
+        btn_layout.addWidget(self.backup_checkbox)
+
         btn_layout.addStretch()
 
         rename_btn = QPushButton(self._tr("📛 Rename to NINA Pattern", "📛 Renommer selon Pattern NINA"))
@@ -364,6 +375,8 @@ class HeaderEditorTab(QWidget):
         """Save current options to config for next session."""
         self.config.set('header_editor.last_folder',
                         self.folder_input.text().strip())
+        self.config.set('header_editor.create_backup',
+                        self.backup_checkbox.isChecked())
         self.config.save_config()
 
     def _browse_folder(self):
@@ -514,9 +527,12 @@ class HeaderEditorTab(QWidget):
         self.worker.progress_signal.connect(lambda c, t, p: signals.headers_edit_progress.emit(c, t))
         self.worker.finished_signal.connect(self._on_edit_finished)
 
+        backup = self.backup_checkbox.isChecked()
+        self._save_options()
+
         job = WorkerJob(
             job_type=JobType.HEADER_EDIT,
-            params={'files': self.loaded_files, 'changes': changes},
+            params={'files': self.loaded_files, 'changes': changes, 'backup': backup},
             priority=8
         )
         self.worker.set_single_job(job)

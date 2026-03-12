@@ -44,3 +44,5 @@ desktop.ini
 crash_reports/
 astromanager.log
 audit_db.py
+_progress.json
+.claudeignore

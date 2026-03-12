@@ -90,9 +90,22 @@
 - Manual check via Help > Check for Updates
 - Fails silently with no internet (5-second timeout)
 
+### Mount Tracking Analysis (MountMonitor)
+- Import MountMonitor log files (.dat, .dti, .fft, .env, .log)
+- Target segmentation: automatic detection of pointing changes by RA/DEC jumps
+- Tracking quality dashboard: RA/DEC RMS deviation, tracking percentage, quality grade (A-F)
+- cos(dec) correction for true RA arcseconds on the sky
+- TRACKING-only filtering: excludes SLEWING, PARKED, and IDLE samples
+- FFT periodic error analysis: dominant PE periods and amplitudes per axis
+- Real-time tracking deviation timeline chart
+- Per-target statistics table (RMS, range, duration per segment)
+- Time synchronization analysis (PC-Mount drift, loop times)
+- Environment data correlation (temperature, pressure, alignment)
+- Single file or batch folder import
+
 ### Modern Interface
 - Cosmic dark theme with neon accents
-- 8-tab organized workflow
+- 9-tab organized workflow
 - Bilingual support (English / French) with auto-detection
 - Tooltips on every widget (bilingual)
 - Built-in settings dialog (Ctrl+,)
@@ -224,7 +237,14 @@ chmod +x build.sh
 5. Export complete history (JSON) or observations (CSV)
 6. Import history from previous exports or other tools
 
-### 7. Disk Space Tab
+### 7. Mount Tracking Tab
+1. Click **Import .dat** and select a MountMonitor log file (or **Import Folder** for batch)
+2. View tracking quality dashboard: RA/DEC RMS, tracking %, quality grade
+3. Analyze tracking deviation timeline chart (RA/DEC over time)
+4. Review FFT periodic error peaks (worm gear frequency detection)
+5. Browse per-target segment statistics (RMS, range, duration)
+
+### 8. Disk Space Tab
 1. View storage breakdown by format
 2. Review optimization recommendations (compression, dedup, archive)
 3. Organize files using presets (by type, date, target)
@@ -318,10 +338,20 @@ astromanager/
 ├── USER_MANUAL_EN.pdf           # English user manual
 ├── USER_MANUAL_FR.pdf           # French user manual
 │
+├── parsers/
+│   ├── base_parser.py           # Data classes and storage functions
+│   ├── pixinsight_log_parser.py # PixInsight WBPP/FBP log parser
+│   └── mountmonitor_parser.py   # MountMonitor .dat/.dti/.fft/.env parser
+│
+├── analyzers/
+│   ├── pixinsight_analyzer.py   # PixInsight processing analysis
+│   └── mount_analyzer.py        # Mount tracking quality analysis
+│
 ├── core/
 │   ├── __init__.py              # Version definition (__version__)
 │   ├── config.py                # Configuration manager (YAML)
 │   ├── database.py              # SQLite database (targets, weather, cache)
+│   ├── i18n.py                  # Language detection (auto/en/fr)
 │   ├── workers.py               # Unified worker architecture (QThread)
 │   ├── signals.py               # Global signal bus (PyQt6 signals)
 │   └── updater.py               # Update checker coordinator (interval, QThread)
@@ -340,7 +370,8 @@ astromanager/
 │       ├── target_tracking_tab.py # Target tracking tab
 │       ├── history_tab.py       # Observation history & statistics tab
 │       ├── database_tab.py      # Database browser tab
-│       └── disk_space_tab.py    # Disk space + file organization tab
+│       ├── disk_space_tab.py    # Disk space + file organization tab
+│       └── mount_tab.py         # Mount tracking analysis tab
 │
 ├── modules/
 │   ├── compression.py           # Compression engine (9 profiles)
