@@ -1096,6 +1096,7 @@ class UnifiedWorker(QThread):
 
         files = params.get('files', [])
         changes = params.get('changes', {})
+        backup = params.get('backup', False)
 
         if not files or not changes:
             return {'modified': 0}
@@ -1106,7 +1107,7 @@ class UnifiedWorker(QThread):
         def progress_cb(i, total_count):
             self.progress_signal.emit(i, total_count, f"Editing headers...")
 
-        results = write_headers_batch(files, changes, progress_callback=progress_cb)
+        results = write_headers_batch(files, changes, backup=backup, progress_callback=progress_cb)
 
         modified = sum(1 for v in results.values() if v)
         errors = total - modified

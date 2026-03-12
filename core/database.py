@@ -244,7 +244,256 @@ class DatabaseManager:
             # Set schema version
             cursor.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (1)")
 
+            # Run migrations
+            self._migrate(cursor)
+
             logger.info("Database initialized successfully")
+
+    def _migrate(self, cursor):
+        """Run schema migrations."""
+        cursor.execute("SELECT MAX(version) FROM schema_version")
+        row = cursor.fetchone()
+        current_version = row[0] if row else 1
+
+        if current_version < 2:
+            self._migrate_to_v2(cursor)
+        if current_version < 3:
+            self._migrate_to_v3(cursor)
+
+    def _migrate_to_v2(self, cursor):
+        """Migration v2: PixInsight processing tables."""
+        # PixInsight session-level metadata
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS pixinsight_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id INTEGER,
+                log_file_path TEXT,
+                pixinsight_version TEXT,
+                script_name TEXT,
+                script_version TEXT,
+                log_timestamp TEXT,
+                total_subframes INTEGER DEFAULT 0,
+                subframes_succeeded INTEGER DEFAULT 0,
+                subframes_failed INTEGER DEFAULT 0,
+                registration_succeeded INTEGER DEFAULT 0,
+                registration_failed INTEGER DEFAULT 0,
+                total_elapsed TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Per-frame SubframeSelector metrics
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS pixinsight_subframes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id INTEGER,
+                filename TEXT,
+                fwhm REAL,
+                eccentricity REAL,
+                num_stars INTEGER,
+                psf_signal_weight REAL,
+                psf_snr REAL,
+                snr REAL,
+                median_adu REAL,
+                mad_adu REAL,
+                mstar_adu REAL,
+                target_name TEXT,
+                filter_name TEXT,
+                exposure_seconds REAL,
+                temperature REAL,
+                camera TEXT,
+                binning INTEGER,
+                frame_index INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # ImageIntegration results per filter
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS pixinsight_integrations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id INTEGER,
+                filter_name TEXT,
+                combination_method TEXT,
+                weight_mode TEXT,
+                normalization TEXT,
+                rejection_method TEXT,
+                frames_total INTEGER,
+                frames_integrated INTEGER,
+                frames_rejected INTEGER,
+                total_rejection_pct REAL,
+                low_rejection_pct REAL,
+                high_rejection_pct REAL,
+                output_snr REAL,
+                output_psf_signal REAL,
+                output_noise REAL,
+                output_file TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Per-frame weights and pixel rejection
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS pixinsight_frame_weights (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                integration_id INTEGER REFERENCES pixinsight_integrations(id),
+                session_id INTEGER,
+                filename TEXT,
+                normalized_weight REAL,
+                accepted INTEGER DEFAULT 1,
+                rejection_weight REAL,
+                rejection_threshold REAL,
+                pixel_rejection_count INTEGER,
+                pixel_rejection_pct REAL,
+                low_rejection_pct REAL,
+                high_rejection_pct REAL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Calibration group metadata
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS pixinsight_calibrations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id INTEGER,
+                filter_name TEXT,
+                frame_type TEXT,
+                frames_total INTEGER,
+                frames_active INTEGER,
+                image_width INTEGER,
+                image_height INTEGER,
+                binning INTEGER,
+                exposure_seconds REAL,
+                color_mode TEXT,
+                master_dark_path TEXT,
+                master_flat_path TEXT,
+                master_bias_path TEXT,
+                pedestal_value REAL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Indexes
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_pi_subframe_session ON pixinsight_subframes(session_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_pi_subframe_filter ON pixinsight_subframes(filter_name)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_pi_subframe_target ON pixinsight_subframes(target_name)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_pi_integration_session ON pixinsight_integrations(session_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_pi_frameweight_integration ON pixinsight_frame_weights(integration_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_pi_calibration_session ON pixinsight_calibrations(session_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_pi_session_session ON pixinsight_sessions(session_id)")
+
+        cursor.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (2)")
+        logger.info("Database migrated to schema version 2 (PixInsight tables)")
+
+    def _migrate_to_v3(self, cursor):
+        """Migration v3: MountMonitor tracking tables."""
+        # Mount session metadata
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS mount_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id INTEGER,
+                log_file_path TEXT,
+                mount_source TEXT,
+                mount_version TEXT,
+                mount_name TEXT,
+                mount_location TEXT,
+                mount_firmware TEXT,
+                total_samples INTEGER DEFAULT 0,
+                tracking_samples INTEGER DEFAULT 0,
+                num_segments INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Per-sample mount tracking data
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS mount_tracking_data (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id INTEGER,
+                timestamp TEXT,
+                ra_hours REAL,
+                dec_degrees REAL,
+                ra_dev_arcsec REAL,
+                dec_dev_arcsec REAL,
+                ra_stdev REAL,
+                dec_stdev REAL,
+                status TEXT,
+                ra_axis_pos REAL,
+                dec_axis_pos REAL,
+                target_segment INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Time synchronization data
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS mount_time_data (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id INTEGER,
+                timestamp TEXT,
+                pc_mount_diff_ms REAL,
+                pc_loop_ms REAL,
+                mount_loop_ms REAL,
+                ntp_diff_ms REAL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # FFT periodic error data
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS mount_fft_data (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id INTEGER,
+                timestamp TEXT,
+                axis TEXT,
+                sample_rate REAL,
+                num_bins INTEGER,
+                peak1_freq REAL,
+                peak1_period REAL,
+                peak1_amp REAL,
+                peak2_freq REAL,
+                peak2_period REAL,
+                peak2_amp REAL,
+                peak3_freq REAL,
+                peak3_period REAL,
+                peak3_amp REAL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Environment data
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS mount_environment_data (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id INTEGER,
+                timestamp TEXT,
+                temp_ext REAL,
+                pressure REAL,
+                temp_int REAL,
+                tracking_rate TEXT,
+                meridian_flip_min REAL,
+                pier_side TEXT,
+                align_stars INTEGER,
+                align_rms REAL,
+                polar_error REAL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Indexes for performance
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_mt_tracking_session ON mount_tracking_data(session_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_mt_tracking_ts ON mount_tracking_data(session_id, timestamp)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_mt_tracking_segment ON mount_tracking_data(session_id, target_segment)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_mt_time_session ON mount_time_data(session_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_mt_time_ts ON mount_time_data(session_id, timestamp)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_mt_fft_session ON mount_fft_data(session_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_mt_fft_ts ON mount_fft_data(session_id, timestamp)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_mt_env_session ON mount_environment_data(session_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_mt_env_ts ON mount_environment_data(session_id, timestamp)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_mt_session_session ON mount_sessions(session_id)")
+
+        cursor.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (3)")
+        logger.info("Database migrated to schema version 3 (MountMonitor tables)")
 
     def _check_integrity(self):
         """Run PRAGMA integrity_check on the database"""
