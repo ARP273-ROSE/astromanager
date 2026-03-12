@@ -323,7 +323,12 @@ class XISFWriter:
         self.shuffle = shuffle
 
     def write_image(self, data: np.ndarray, header=None):
-        """Write image data and optional FITS header to XISF."""
+        """Write image data and optional FITS header to XISF.
+
+        Includes round-trip verification (decompress after compress) and
+        post-write verification (re-read the file) to ensure PixInsight
+        compatibility. Raises ValueError if verification fails.
+        """
         if not data.flags['C_CONTIGUOUS']:
             data = np.ascontiguousarray(data)
         if data.dtype.byteorder == '>':
@@ -333,10 +338,34 @@ class XISFWriter:
         original_size = len(image_bytes)
         item_size = data.dtype.itemsize
 
+        # SHA-256 of original pixel data (reference for verification)
+        original_sha256 = hashlib.sha256(image_bytes).digest()
+
         compressed = compress_data(image_bytes, self.codec, self.level,
                                    self.shuffle, item_size)
-        del image_bytes
         compressed_size = len(compressed)
+
+        # ── Round-trip verification: decompress and compare SHA-256 ──
+        if self.codec != 'none':
+            try:
+                decompressed = decompress_data(compressed, self.codec,
+                                               original_size, self.shuffle,
+                                               item_size)
+                verify_sha256 = hashlib.sha256(decompressed).digest()
+                del decompressed
+            except Exception as e:
+                raise ValueError(
+                    f"XISF round-trip verification failed (decompression error): {e}"
+                )
+            if original_sha256 != verify_sha256:
+                raise ValueError(
+                    "XISF round-trip verification failed: SHA-256 mismatch — "
+                    f"original={original_sha256.hex()[:16]}… "
+                    f"verify={verify_sha256.hex()[:16]}…"
+                )
+            logger.debug("XISF round-trip verification passed (SHA-256 match)")
+
+        del image_bytes  # Free memory AFTER verification
 
         def _aligned(pos, align=self._BLOCK_ALIGNMENT):
             return ((pos + align - 1) // align) * align
@@ -358,25 +387,70 @@ class XISFWriter:
         header_total = 8 + 4 + 4 + len(xml_bytes)
         padding = _aligned(header_total) - header_total
 
+        # Validate XML is well-formed before writing
+        try:
+            test_xml = xml_str
+            if test_xml.startswith('<?xml'):
+                test_xml = test_xml[test_xml.index('?>') + 2:].strip()
+            ET.fromstring(test_xml)
+        except ET.ParseError as e:
+            raise ValueError(f"XISF XML validation failed (malformed header): {e}")
+
+        # ── Write XISF file ──
         with open(self.filepath, 'wb') as f:
             f.write(b'XISF0100')
-            f.write(struct.pack('<I', len(xml_bytes)))
+            # Header length includes padding (XISF 1.0 / PixInsight conformance)
+            f.write(struct.pack('<I', len(xml_bytes) + padding))
             f.write(b'\x00\x00\x00\x00')
             f.write(xml_bytes)
             if padding > 0:
                 f.write(b'\x00' * padding)
             f.write(compressed)
 
+        del compressed
+
+        # ── Post-write verification: re-read the file and compare ──
+        try:
+            reader = XISFReader(self.filepath)
+            read_data, _ = reader.read_image()
+            if read_data.shape != data.shape:
+                raise ValueError(
+                    f"Shape mismatch: wrote {data.shape}, read {read_data.shape}"
+                )
+            if read_data.dtype != data.dtype:
+                raise ValueError(
+                    f"Dtype mismatch: wrote {data.dtype}, read {read_data.dtype}"
+                )
+            read_sha256 = hashlib.sha256(read_data.tobytes()).digest()
+            del read_data
+            if read_sha256 != original_sha256:
+                raise ValueError(
+                    "Post-write verification failed: data corrupted on disk"
+                )
+            logger.debug("XISF post-write verification passed")
+        except Exception as e:
+            # Delete the corrupt/unverified file
+            try:
+                os.remove(self.filepath)
+            except OSError:
+                pass
+            raise ValueError(f"XISF post-write verification failed: {e}")
+
         return {
             'original_size': original_size,
             'compressed_size': compressed_size,
             'ratio': (1 - compressed_size / original_size) * 100 if original_size > 0 else 0,
+            'verified': True,
+            'sha256': original_sha256.hex(),
         }
 
     @staticmethod
     def _escape_xml(s):
-        """Escape XML special characters."""
-        return (str(s).replace('&', '&amp;').replace('<', '&lt;')
+        """Escape XML special characters and strip invalid control chars."""
+        s = str(s)
+        # Strip XML 1.0 invalid control chars (keep TAB \x09, LF \x0A, CR \x0D)
+        s = ''.join(c for c in s if c >= ' ' or c in '\t\n\r')
+        return (s.replace('&', '&amp;').replace('<', '&lt;')
                 .replace('>', '&gt;').replace('"', '&quot;')
                 .replace("'", '&apos;'))
 
@@ -425,8 +499,12 @@ class XISFWriter:
             f'colorSpace="{color_space}"',
             f'location="{location}"',
         ]
-        if sample_format in ('Float32', 'Float64'):
-            img_attrs.insert(2, 'bounds="0:1"')
+        _bounds_map = {
+            'UInt8': '0:255', 'UInt16': '0:65535', 'UInt32': '0:4294967295',
+            'Int16': '-32768:32767', 'Int32': '-2147483648:2147483647',
+            'Float32': '0:1', 'Float64': '0:1',
+        }
+        img_attrs.insert(2, f'bounds="{_bounds_map.get(sample_format, "0:1")}"')
         if codec_attr:
             img_attrs.append(f'compression="{codec_attr}"')
 
@@ -742,9 +820,17 @@ def fits_to_xisf(fits_path, output_path=None, profile='zlib_6',
             'compressed_size': xisf_size,
             'ratio': (1 - xisf_size / original_size) * 100 if original_size > 0 else 0,
             'codec': prof['codec'],
+            'verified': info.get('verified', False),
+            'sha256': info.get('sha256', ''),
         }
 
     except Exception as e:
+        # Clean up partial output on failure
+        if output_path and os.path.exists(output_path):
+            try:
+                os.remove(output_path)
+            except OSError:
+                pass
         return {'status': 'failed', 'message': str(e), 'file': str(fits_path)}
 
 
