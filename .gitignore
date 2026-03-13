@@ -42,6 +42,8 @@ desktop.ini
 *.db-journal
 *.db-wal
 crash_reports/
+config.yaml
+anonymous_id
 astromanager.log
 audit_db.py
 _progress.json
