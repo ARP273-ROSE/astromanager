@@ -126,44 +126,38 @@
 
 ## Quick Start
 
-### Windows
+### Recommended: Portable Launcher (NAS / Multi-PC)
 
 ```bash
 git clone https://github.com/ARP273-ROSE/astromanager.git
 cd astromanager
-run.bat
+
+# Windows
+launch.bat
+
+# Linux / macOS
+chmod +x launch.sh && ./launch.sh
 ```
 
-The launcher automatically:
-- Detects/installs Python 3.8+ (via winget, with 4 fallback methods)
-- Creates virtual environment
-- Installs all dependencies
-- Offers to install MiKTeX (LaTeX) for PDF reports
-- Launches AstroManager
+The portable launcher scripts (`launch.bat` / `launch.sh`):
+- Auto-detect Python on the local machine
+- Create a virtual environment **locally** (`%LOCALAPPDATA%\AstroManager\venv` on Windows, `$XDG_DATA_HOME/AstroManager/venv` on Linux)
+- Install dependencies automatically
+- Launch with `pythonw` (no console window on Windows)
+- Work seamlessly when the project folder is on a NAS or synced drive
 
-### Linux / macOS
+### Legacy Launcher
 
-```bash
-git clone https://github.com/ARP273-ROSE/astromanager.git
-cd astromanager
-chmod +x run.sh
-./run.sh
-```
-
-Supports: pacman (Arch/Manjaro), apt (Debian/Ubuntu), dnf (Fedora), zypper (openSUSE), brew (macOS).
+The older `run.bat` / `run.sh` scripts still work but create the venv inside the project folder. Use `launch.bat` / `launch.sh` instead for multi-PC portability.
 
 ### Manual Installation
 
 ```bash
-python -m venv venv
-source venv/bin/activate   # Linux/macOS
-# venv\Scripts\activate    # Windows
-
 pip install -r requirements.txt
 python astromanager.py
 ```
 
-> **Note:** Both launchers are fully bilingual (EN/FR auto-detection). AstroManager also auto-installs missing dependencies on first launch.
+> **Note:** AstroManager also auto-installs missing dependencies on first launch.
 
 ### Standalone Executable (.exe / AppImage)
 
@@ -329,8 +323,10 @@ astromanager/
 ├── astromanager.py              # Main launcher (GUI + CLI)
 ├── fits_analyser_gui.py         # Core analysis engine (18k+ lines)
 ├── requirements.txt             # Python dependencies
-├── run.bat                      # Windows auto-launcher
-├── run.sh                       # Linux/macOS auto-launcher
+├── launch.bat                   # Portable Windows launcher (local venv)
+├── launch.sh                    # Portable Linux/macOS launcher (local venv)
+├── run.bat                      # Legacy Windows launcher (venv in project)
+├── run.sh                       # Legacy Linux/macOS launcher (venv in project)
 ├── build.bat                    # Windows .exe build script (PyInstaller)
 ├── build.sh                     # Linux/macOS build script (PyInstaller)
 ├── astromanager.spec            # PyInstaller spec file
@@ -431,6 +427,20 @@ astromanager/
 | `Ctrl+Q` | Quit |
 | `Ctrl+\`` | Toggle console |
 | `F1` | User Guide |
+
+---
+
+## NAS / Multi-PC Portability
+
+AstroManager is designed to work seamlessly from a NAS or any synced folder (Synology, QNAP, OneDrive, Dropbox, etc.).
+
+- **Virtual environment stored locally** on each PC (not in the project folder):
+  - Windows: `%LOCALAPPDATA%\AstroManager\venv`
+  - Linux: `$XDG_DATA_HOME/AstroManager/venv` (default: `~/.local/share`)
+- **Launcher scripts** (`launch.bat` / `launch.sh`) auto-detect Python, create the venv if needed, install dependencies, and start the app with `pythonw` (no console window on Windows).
+- **Desktop shortcuts** target the launcher script, so they work even if the project is mapped to a different drive letter on each PC.
+- **Database and config** stay in the project directory and are synced across PCs.
+- If you move the project folder, use **Help > Create Desktop Shortcut** to update the shortcut path.
 
 ---
 
