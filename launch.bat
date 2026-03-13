@@ -43,7 +43,25 @@ if exist "%VENV_DIR%" (
     rmdir /s /q "%VENV_DIR%"
 )
 echo Creating virtual environment...
+if not exist "%LOCALAPPDATA%\AstroManager" mkdir "%LOCALAPPDATA%\AstroManager"
 %PYTHON% -m venv "%VENV_DIR%"
+if errorlevel 1 (
+    echo.
+    echo  Failed to create virtual environment.
+    echo  VENV_DIR: %VENV_DIR%
+    echo  PYTHON: %PYTHON%
+    echo.
+    pause
+    exit /b 1
+)
+if not exist "%VENV_DIR%\Scripts\python.exe" (
+    echo.
+    echo  Virtual environment created but python.exe not found.
+    echo  Check: %VENV_DIR%\Scripts\
+    echo.
+    pause
+    exit /b 1
+)
 
 :venv_ok
 REM === Activate venv ===
