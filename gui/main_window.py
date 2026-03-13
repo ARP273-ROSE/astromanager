@@ -1249,7 +1249,7 @@ class AstroManagerWindow(QMainWindow):
                 <li><b>Windows :</b> Lancez <code>build.bat</code> pour créer <code>dist\\AstroManager\\AstroManager.exe</code></li>
                 <li><b>Linux / macOS :</b> Lancez <code>./build.sh</code> pour créer <code>dist/AstroManager/AstroManager</code></li>
                 <li><b>Prérequis :</b> PyInstaller (<code>pip install pyinstaller</code>)</li>
-                <li><b>Données :</b> Configuration et base de données restent dans <code>~/.astromanager/</code></li>
+                <li><b>Données :</b> Configuration et base de données restent dans le répertoire du projet</li>
                 <li><b>Multiplateforme :</b> Fonctionne sur Windows, Linux et macOS</li>
             </ul>
             <h3>10. Mises à jour</h3>
@@ -1326,7 +1326,7 @@ class AstroManagerWindow(QMainWindow):
                 <li><b>Windows:</b> Run <code>build.bat</code> to create <code>dist\\AstroManager\\AstroManager.exe</code></li>
                 <li><b>Linux / macOS:</b> Run <code>./build.sh</code> to create <code>dist/AstroManager/AstroManager</code></li>
                 <li><b>Prerequisite:</b> PyInstaller (<code>pip install pyinstaller</code>)</li>
-                <li><b>Data:</b> Configuration and database remain in <code>~/.astromanager/</code></li>
+                <li><b>Data:</b> Configuration and database remain in the project directory</li>
                 <li><b>Cross-platform:</b> Works on Windows, Linux, and macOS</li>
             </ul>
             <h3>10. Updates</h3>
@@ -1448,6 +1448,12 @@ def main():
 
     window = AstroManagerWindow()
     window.show()
+
+    # Offer desktop shortcut on first launch
+    from shortcut_helper import offer_shortcut
+    offer_shortcut("AstroManager", "astromanager.py", "assets/icon.ico",
+                   get_config=lambda k: config.get(k) if config else None,
+                   set_config=lambda k, v: (config.set(k, v), config.save_config()) if config else None)
 
     # Auto-check for updates after a delay (let the UI load first)
     if config and config.get('application.check_updates_on_startup', True):

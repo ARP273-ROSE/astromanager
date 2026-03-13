@@ -23,7 +23,7 @@ GITHUB_API = "https://api.github.com/repos/ARP273-ROSE/astromanager/releases/lat
 GITHUB_REPO = "ARP273-ROSE/astromanager"
 
 # Directories to exclude when applying updates
-EXCLUDED_DIRS = {'config', '.astromanager', 'venv', '.venv', '.git', '__pycache__'}
+EXCLUDED_DIRS = {'config', 'venv', '.venv', '.git', '__pycache__'}
 
 # Maximum download size: 500 MB
 _MAX_DOWNLOAD_BYTES = 500 * 1024 * 1024

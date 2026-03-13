@@ -66,11 +66,14 @@ class AnonymousBugReporter:
         """
         Get or create a stable anonymous user ID.
 
-        Uses a random UUID4 persisted in ~/.astromanager/anonymous_id.
+        Uses a random UUID4 persisted in <project_root>/anonymous_id.
         The ID is not derived from any hardware or personal information. [FIX #1]
         """
         try:
-            id_dir = Path.home() / '.astromanager'
+            if getattr(sys, 'frozen', False):
+                id_dir = Path(sys._MEIPASS)
+            else:
+                id_dir = Path(__file__).resolve().parent.parent
             id_file = id_dir / 'anonymous_id'
 
             # Read existing ID if available
@@ -277,7 +280,11 @@ class AnonymousBugReporter:
     def _save_local_report(self, report: Dict):
         """Save report locally when network is unavailable"""
         try:
-            report_dir = Path.home() / '.astromanager' / 'crash_reports'
+            if getattr(sys, 'frozen', False):
+                _base = Path(sys._MEIPASS)
+            else:
+                _base = Path(__file__).resolve().parent.parent
+            report_dir = _base / 'crash_reports'
             report_dir.mkdir(parents=True, exist_ok=True)
             if platform.system() != 'Windows':
                 os.chmod(str(report_dir), 0o700)

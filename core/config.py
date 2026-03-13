@@ -20,22 +20,14 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Default configuration paths
-CONFIG_DIR = Path.home() / '.astromanager'
-CONFIG_FILE = CONFIG_DIR / 'config.yaml'
+# Default configuration paths — portable (project-relative)
 if getattr(sys, 'frozen', False):
     _BASE = Path(sys._MEIPASS)
 else:
-    _BASE = Path(__file__).parent.parent
+    _BASE = Path(__file__).resolve().parent.parent
+CONFIG_DIR = _BASE
+CONFIG_FILE = CONFIG_DIR / 'config.yaml'
 DEFAULT_CONFIG_FILE = _BASE / 'config' / 'default_config.yaml'
-
-# Ensure config directory exists with restrictive permissions
-try:
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    if platform.system() != 'Windows':
-        os.chmod(str(CONFIG_DIR), 0o700)
-except OSError:
-    pass
 
 
 class ConfigManager:
