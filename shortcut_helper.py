@@ -319,3 +319,38 @@ def offer_shortcut(app_name: str, main_script: str, icon_file: str,
     # Remember choice so we don't ask again (only for new shortcuts, not updates)
     if not needs_update and set_config:
         set_config("shortcut_offered", "offered")
+
+
+def create_shortcut_force(app_name: str, main_script: str, icon_file: str):
+    """
+    Force-create or update a desktop shortcut (called from Help menu).
+    Returns True on success, False on failure. Shows result via QMessageBox.
+    """
+    if sys.platform == "darwin":
+        return False
+
+    project = _get_project_dir()
+    success = False
+    if sys.platform == "win32":
+        success = _create_windows_shortcut(app_name, main_script, icon_file, project)
+    elif sys.platform == "linux":
+        success = _create_linux_shortcut(app_name, main_script, icon_file, project)
+
+    try:
+        from PyQt6.QtWidgets import QMessageBox
+        if success:
+            QMessageBox.information(
+                None, app_name,
+                _T("Raccourci créé sur le bureau !",
+                    "Desktop shortcut created!")
+            )
+        else:
+            QMessageBox.warning(
+                None, app_name,
+                _T("Impossible de créer le raccourci.",
+                    "Could not create the shortcut.")
+            )
+    except ImportError:
+        pass
+
+    return success

@@ -327,6 +327,10 @@ class AstroManagerWindow(QMainWindow):
         bug_action.triggered.connect(self._show_bug_dialog)
         help_menu.addAction(bug_action)
 
+        shortcut_action = QAction(self._tr("Create Desktop Shortcut", "Créer raccourci bureau"), self)
+        shortcut_action.triggered.connect(self._create_desktop_shortcut)
+        help_menu.addAction(shortcut_action)
+
         help_menu.addSeparator()
 
         about_action = QAction(self._tr("&About", "&À propos"), self)
@@ -574,6 +578,17 @@ class AstroManagerWindow(QMainWindow):
             self._tr("Language", "Langue"),
             self._tr("Language changed. Restart to apply.",
                      "Langue modifiée. Redémarrez pour appliquer."))
+
+    def _create_desktop_shortcut(self):
+        """Create a desktop shortcut for AstroManager."""
+        try:
+            from shortcut_helper import create_shortcut_force
+            create_shortcut_force("AstroManager", "astromanager.py", "assets/icon.ico")
+        except Exception as e:
+            QMessageBox.warning(self,
+                self._tr("Error", "Erreur"),
+                self._tr(f"Could not create shortcut: {e}",
+                         f"Impossible de créer le raccourci : {e}"))
 
     def _show_about(self):
         QMessageBox.about(self,
