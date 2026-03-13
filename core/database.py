@@ -21,20 +21,15 @@ import threading
 
 logger = logging.getLogger(__name__)
 
-# Database location
-DB_DIR = Path.home() / '.astromanager'
+# Database location — portable (project-relative)
+import platform as _platform
+import sys as _sys
+if getattr(_sys, 'frozen', False):
+    DB_DIR = Path(_sys._MEIPASS)
+else:
+    DB_DIR = Path(__file__).resolve().parent.parent
 DB_PATH = DB_DIR / 'astromanager.db'
 DB_BACKUP_PATH = DB_DIR / 'astromanager_backup.db'
-
-# Ensure database directory exists with restrictive permissions
-import platform as _platform
-try:
-    DB_DIR.mkdir(parents=True, exist_ok=True)
-    if _platform.system() != 'Windows':
-        import os as _os
-        _os.chmod(str(DB_DIR), 0o700)
-except OSError:
-    pass
 
 # Thread-local storage for database connections
 _thread_local = threading.local()
