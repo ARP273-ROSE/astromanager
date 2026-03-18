@@ -104,6 +104,20 @@ class AnalysisTab(QWidget):
             "Récupérer les données météo historiques de Open-Meteo pour chaque date d'observation"
         ))
         analysis_layout.addWidget(self.cb_weather)
+
+        self.cb_batch_solve = QCheckBox(self._tr(
+            "Solve all unsolved lights (write WCS)",
+            "Résoudre tous les lights non résolus (écrire WCS)"
+        ))
+        self.cb_batch_solve.setToolTip(self._tr(
+            "Use ASTAP to astrometrically solve all raw LIGHT frames that don't have WCS coordinates yet.\n"
+            "WCS keywords (CRVAL, CD matrix, etc.) are written directly into the FITS/XISF headers.\n"
+            "This is equivalent to NINA's 'Solve Every Light' plugin but applied retroactively.",
+            "Utiliser ASTAP pour résoudre astrométriquement tous les fichiers LIGHT bruts qui n'ont pas encore de coordonnées WCS.\n"
+            "Les mots-clés WCS (CRVAL, matrice CD, etc.) sont écrits directement dans les en-têtes FITS/XISF.\n"
+            "Équivalent au plugin 'Solve Every Light' de NINA mais appliqué rétroactivement."
+        ))
+        analysis_layout.addWidget(self.cb_batch_solve)
         options_layout.addWidget(analysis_group)
 
         # Output Formats
@@ -293,6 +307,7 @@ class AnalysisTab(QWidget):
         """Restore saved options from config"""
         self.cb_simbad.setChecked(self.config.get('analysis.enable_simbad', True))
         self.cb_plate_solve.setChecked(self.config.get('analysis.enable_plate_solving', False))
+        self.cb_batch_solve.setChecked(self.config.get('plate_solving.batch_solve_lights', False))
         self.cb_weather.setChecked(self.config.get('analysis.enable_weather_fetch', False))
         self.cb_graphs.setChecked(self.config.get('analysis.generate_graphs', True))
         self.cb_latex.setChecked(self.config.get('analysis.generate_latex', True))
@@ -318,6 +333,7 @@ class AnalysisTab(QWidget):
         """Save current options to config"""
         self.config.set('analysis.enable_simbad', self.cb_simbad.isChecked())
         self.config.set('analysis.enable_plate_solving', self.cb_plate_solve.isChecked())
+        self.config.set('plate_solving.batch_solve_lights', self.cb_batch_solve.isChecked())
         self.config.set('analysis.enable_weather_fetch', self.cb_weather.isChecked())
         self.config.set('analysis.generate_graphs', self.cb_graphs.isChecked())
         self.config.set('analysis.generate_latex', self.cb_latex.isChecked())
@@ -468,6 +484,7 @@ class AnalysisTab(QWidget):
             'detect_wrong_extensions': self.cb_fix_extensions.isChecked(),
             'workers': self.workers_spin.value(),
             'plate_solve': self.cb_plate_solve.isChecked(),
+            'batch_solve_lights': self.cb_batch_solve.isChecked(),
             'weather': self.cb_weather.isChecked(),
         }
 
@@ -480,8 +497,8 @@ class AnalysisTab(QWidget):
         # Save options before starting
         self._save_options()
 
-        # Check ASTAP availability if plate solving is enabled
-        if self.cb_plate_solve.isChecked():
+        # Check ASTAP availability if plate solving or batch solve is enabled
+        if self.cb_plate_solve.isChecked() or self.cb_batch_solve.isChecked():
             try:
                 from modules.plate_solving import find_astap_executable, get_astap_install_instructions
                 if find_astap_executable() is None:
@@ -507,6 +524,7 @@ class AnalysisTab(QWidget):
                     if dlg.exec() == QDialog.DialogCode.Rejected:
                         return
                     self.cb_plate_solve.setChecked(False)
+                    self.cb_batch_solve.setChecked(False)
             except Exception:
                 pass
 

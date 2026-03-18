@@ -50,6 +50,7 @@ plate_solving:
   astap_path: null  # Path to ASTAP executable (null = auto-detect)
   astrometry_path: null  # Path to Astrometry.net (null = auto-detect)
   timeout_sec: 60  # Maximum time to wait for plate solving
+  batch_solve_lights: false  # Solve all unsolved lights and write WCS to headers
 
 weather:
   api_provider: "open-meteo"  # Options: open-meteo, openweathermap

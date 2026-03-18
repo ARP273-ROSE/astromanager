@@ -6,18 +6,22 @@ ASTROMANAGER - PLATE SOLVING MODULE
 ================================================================================
 Wrapper for ASTAP and Astrometry.net plate solvers.
 Detects focal reducers by comparing measured vs expected plate scale.
+Batch solve: solve all unsolved LIGHT frames and write WCS to headers.
 ================================================================================
 """
 
 import os
 import sys
+import struct
+import re
 import subprocess
 import logging
 import configparser
 import glob
 import time
+import tempfile
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -577,3 +581,559 @@ def solve_and_detect_reducer(filepath: str, pixel_size_um: float,
         result['reducer'] = reducer_info
 
     return result
+
+
+# ============================================================================
+# BATCH PLATE SOLVING - Solve all unsolved LIGHT frames & write WCS to headers
+# ============================================================================
+
+# WCS keywords written to solved files
+_WCS_KEYS = [
+    'PLTSOLVD', 'CRPIX1', 'CRPIX2', 'CRVAL1', 'CRVAL2',
+    'CDELT1', 'CDELT2', 'CROTA1', 'CROTA2',
+    'CD1_1', 'CD1_2', 'CD2_1', 'CD2_2',
+    'CTYPE1', 'CTYPE2', 'CUNIT1', 'CUNIT2',
+]
+
+_WCS_COMMENTS = {
+    'PLTSOLVD': 'Plate solved by ASTAP',
+    'CRPIX1': 'X of reference pixel',
+    'CRPIX2': 'Y of reference pixel',
+    'CRVAL1': 'RA of reference pixel (deg)',
+    'CRVAL2': 'DEC of reference pixel (deg)',
+    'CDELT1': 'X pixel size (deg)',
+    'CDELT2': 'Y pixel size (deg)',
+    'CROTA1': 'Image twist X axis (deg)',
+    'CROTA2': 'Image twist Y axis (deg)',
+    'CD1_1': '', 'CD1_2': '', 'CD2_1': '', 'CD2_2': '',
+    'CTYPE1': 'first parameter RA, projection TAN',
+    'CTYPE2': 'second parameter DEC, projection TAN',
+    'CUNIT1': 'Unit of first axis',
+    'CUNIT2': 'Unit of second axis',
+}
+
+_WCS_FIXED = {
+    'CTYPE1': 'RA---TAN', 'CTYPE2': 'DEC--TAN',
+    'CUNIT1': 'deg', 'CUNIT2': 'deg', 'PLTSOLVD': 'T',
+}
+
+# Directories to skip when scanning for LIGHT files
+_SKIP_DIRS = {
+    'Dark-Bias', 'poubelle', 'PixInsight', 'traitement Pix',
+    'Adam Block tutorials', 'Telescope live', 'Chilescope', 'Seestar S50',
+    'calibrated', 'master', 'masters', 'cosmetized', 'temp', 'rejected',
+    'registered', 'integrated', 'process', 'output',
+}
+
+# PixInsight processed file suffixes (checked before extension)
+_PI_SUFFIXES = ('_c', '_d', '_r', '_cc', '_cal', '_drizzle', '_abe', '_dbe')
+
+# Master/processed file prefixes
+_PROCESSED_PREFIXES = ('master', 'calibrated', 'registered', 'integrated')
+
+# Valid file extensions for batch solving
+_SOLVE_EXTENSIONS = {'.fits', '.fit', '.xisf', '.fz'}
+
+
+def read_xisf_header_fast(filepath: str) -> Optional[Dict[str, Dict]]:
+    """
+    Read FITS keywords from XISF header without decompressing image data.
+    Only reads the XML header (~4-8 KB), not the full file.
+
+    Returns:
+        dict of {keyword: {'value': str, 'comment': str}} or None on error
+    """
+    try:
+        with open(filepath, 'rb') as f:
+            magic = f.read(8)
+            if magic != b'XISF0100':
+                return None
+            header_length = struct.unpack('<I', f.read(4))[0]
+            f.read(4)  # reserved
+            xml_data = f.read(header_length).decode('utf-8')
+
+        keywords = {}
+        for m in re.finditer(
+            r'<FITSKeyword\s+name="([^"]+)"\s+value="([^"]*)"\s+comment="([^"]*)"',
+            xml_data
+        ):
+            name, value, comment = m.group(1), m.group(2), m.group(3)
+            keywords[name] = {'value': value, 'comment': comment}
+        return keywords
+    except Exception as e:
+        logger.debug(f"Failed to read XISF header: {filepath}: {e}")
+        return None
+
+
+def read_fits_header_fast(filepath: str) -> Optional[Dict[str, Dict]]:
+    """Read FITS header keywords quickly. Supports .fits, .fit, and .fits.fz."""
+    try:
+        from astropy.io import fits
+        # .fits.fz: image is in extension 1
+        ext = 1 if filepath.lower().endswith('.fz') else 0
+        hdr = fits.getheader(filepath, ext=ext)
+        keywords = {}
+        for k in hdr:
+            if k and k.strip():
+                try:
+                    comment = hdr.comments[k]
+                except (KeyError, IndexError):
+                    comment = ''
+                keywords[k] = {'value': str(hdr[k]), 'comment': comment}
+        return keywords
+    except Exception as e:
+        logger.debug(f"Failed to read FITS header: {filepath}: {e}")
+        return None
+
+
+def _get_file_type(filepath: str) -> str:
+    """Return normalized file type: 'xisf', 'fits', or 'fz'."""
+    lower = filepath.lower()
+    if lower.endswith('.xisf'):
+        return 'xisf'
+    elif lower.endswith('.fits.fz'):
+        return 'fz'
+    else:
+        return 'fits'
+
+
+def _read_header(filepath: str) -> Optional[Dict[str, Dict]]:
+    """Read header from any supported format."""
+    ftype = _get_file_type(filepath)
+    if ftype == 'xisf':
+        return read_xisf_header_fast(filepath)
+    else:
+        return read_fits_header_fast(filepath)
+
+
+def is_file_solved(filepath: str) -> bool:
+    """Check if a file already has WCS astrometric solution in its header."""
+    kw = _read_header(filepath)
+    return kw is not None and 'CRVAL1' in kw
+
+
+def is_calibration_frame(keywords: Dict[str, Dict]) -> bool:
+    """Check IMAGETYP/FRAME header to detect calibration frames (DARK/FLAT/BIAS)."""
+    for key in ('IMAGETYP', 'FRAME', 'IMTYPE', 'OBSTYPE'):
+        if key in keywords:
+            val = keywords[key].get('value', '').upper()
+            if any(cal in val for cal in ('FLAT', 'DARK', 'BIAS', 'OFFSET')):
+                return True
+    return False
+
+
+def is_raw_light(filepath: str) -> bool:
+    """
+    Check if a file is a raw LIGHT frame (not calibrated/master/processed).
+
+    Uses filename-based heuristics matching AstroManager's existing detection:
+    - PixInsight processed file suffixes (_c, _d, _r, _cc, _cal, _drizzle, _ABE, _DBE)
+    - Master/calibrated/registered/integrated prefixes
+    - Calibration frame prefixes (DARK_, BIAS_, FLAT_)
+    - Copy files
+
+    Supports .fits, .fit, .xisf, .fits.fz extensions.
+    """
+    fname = os.path.basename(filepath)
+    lower = fname.lower()
+
+    # Check extension and extract base name
+    if lower.endswith('.fits.fz'):
+        base = lower[:-8]
+    elif lower.endswith('.xisf'):
+        base = lower[:-5]
+    elif lower.endswith('.fits'):
+        base = lower[:-5]
+    elif lower.endswith('.fit'):
+        base = lower[:-4]
+    else:
+        return False
+
+    # Skip PixInsight processed file suffixes
+    for suffix in _PI_SUFFIXES:
+        if base.endswith(suffix):
+            return False
+
+    # Skip master/processed file prefixes
+    for prefix in _PROCESSED_PREFIXES:
+        if lower.startswith(prefix):
+            return False
+
+    # Skip calibration frame names
+    if (lower.startswith('dark_') or lower.startswith('bias_')
+            or lower.startswith('flat_') or lower.startswith('darkflat_')):
+        return False
+
+    # Skip copies
+    if ' - copie' in lower or ' - copy' in lower:
+        return False
+
+    # Skip PixInsight processing chains in filename
+    if '_c_cc' in lower or '_c_r.' in lower:
+        return False
+
+    return True
+
+
+def scan_light_files(folder: str) -> List[str]:
+    """Scan folder recursively for raw LIGHT files (filename-based fast scan)."""
+    files = []
+    skip_lower = {d.lower() for d in _SKIP_DIRS}
+    # Additional folder prefixes to skip
+    skip_prefixes = ('extracted_', 'duplicates_', 'astronomical_analysis_',
+                     'fits_originals_', 'duplicates_extracted')
+    skip_suffixes = ('_fits_fz_backup',)
+
+    for root, dirs, filenames in os.walk(folder):
+        # Filter directories in-place
+        dirs[:] = [d for d in dirs
+                   if d.lower() not in skip_lower
+                   and not any(d.startswith(p) for p in skip_prefixes)
+                   and not any(d.endswith(s) for s in skip_suffixes)]
+        for fname in filenames:
+            fpath = os.path.join(root, fname)
+            if is_raw_light(fpath):
+                files.append(fpath)
+    return files
+
+
+def _extract_solve_hints(keywords: Dict) -> Dict:
+    """Extract RA, DEC, FOV hints from header keywords for ASTAP."""
+    hints = {}
+    try:
+        if 'RA' in keywords:
+            ra_deg = float(keywords['RA']['value'])
+            hints['ra_h'] = ra_deg / 15.0
+        if 'DEC' in keywords:
+            dec_deg = float(keywords['DEC']['value'])
+            hints['spd'] = 90.0 + dec_deg
+        if 'FOCALLEN' in keywords and 'XPIXSZ' in keywords and 'NAXIS1' in keywords:
+            focallen = float(keywords['FOCALLEN']['value'])
+            pixsize = float(keywords['XPIXSZ']['value'])
+            naxis1 = int(keywords['NAXIS1']['value'])
+            binning = 1
+            if 'XBINNING' in keywords:
+                binning = int(keywords['XBINNING']['value'])
+            pixel_scale = 206.265 * pixsize * binning / focallen
+            hints['fov'] = pixel_scale * naxis1 / 3600
+    except (ValueError, KeyError):
+        pass
+    return hints
+
+
+def _update_xisf_header_inplace(filepath: str, wcs_solution: Dict) -> bool:
+    """
+    Write WCS keywords into XISF header by modifying the XML in-place.
+    If new header fits in existing space, only header bytes are touched (fast).
+    """
+    with open(filepath, 'rb') as f:
+        preamble = f.read(16)
+        magic = preamble[:8]
+        if magic != b'XISF0100':
+            raise ValueError("Not a valid XISF file")
+        header_length = struct.unpack('<I', preamble[8:12])[0]
+        xml_bytes = f.read(header_length)
+
+    xml_data = xml_bytes.decode('utf-8')
+
+    loc_match = re.search(r'location="attachment:(\d+):(\d+)"', xml_data)
+    if not loc_match:
+        raise ValueError("Cannot find attachment location in XISF header")
+
+    att_offset = int(loc_match.group(1))
+    att_size = int(loc_match.group(2))
+
+    # Remove existing WCS keywords to avoid duplicates
+    for key in _WCS_KEYS:
+        xml_data = re.sub(
+            rf'<FITSKeyword\s+name="{key}"\s+value="[^"]*"\s+comment="[^"]*"\s*/?>',
+            '', xml_data
+        )
+
+    # Build WCS FITSKeyword XML entries
+    wcs_xml = ''
+    for key in _WCS_KEYS:
+        if key in _WCS_FIXED:
+            val = _WCS_FIXED[key]
+        elif key in wcs_solution:
+            val = wcs_solution[key].strip()
+        else:
+            continue
+        val = val.replace('&', '&amp;').replace('"', '&quot;').replace("'", "&apos;")
+        comment = _WCS_COMMENTS.get(key, '').replace('&', '&amp;').replace('"', '&quot;')
+        wcs_xml += f'<FITSKeyword name="{key}" value="{val}" comment="{comment}" />'
+
+    new_xml = xml_data.replace('</Image>', wcs_xml + '</Image>')
+    new_xml_bytes = new_xml.encode('utf-8')
+    new_header_length = len(new_xml_bytes)
+
+    if 16 + new_header_length <= att_offset:
+        # Fits in-place — only rewrite header bytes
+        new_header = b'XISF0100'
+        new_header += struct.pack('<I', new_header_length)
+        new_header += struct.pack('<I', 0)
+        new_header += new_xml_bytes
+        new_header += b'\x00' * (att_offset - len(new_header))
+
+        with open(filepath, 'r+b') as f:
+            f.write(new_header)
+        return True
+    else:
+        # Rare: header doesn't fit, must rewrite entire file
+        new_att_offset = ((16 + new_header_length + 4095) // 4096) * 4096
+        new_xml = new_xml.replace(
+            f'attachment:{att_offset}:{att_size}',
+            f'attachment:{new_att_offset}:{att_size}'
+        )
+        new_xml_bytes = new_xml.encode('utf-8')
+        new_header_length = len(new_xml_bytes)
+
+        with open(filepath, 'rb') as f:
+            f.seek(att_offset)
+            image_data = f.read(att_size)
+
+        new_file = b'XISF0100'
+        new_file += struct.pack('<I', new_header_length)
+        new_file += struct.pack('<I', 0)
+        new_file += new_xml_bytes
+        new_file += b'\x00' * (new_att_offset - len(new_file))
+        new_file += image_data
+
+        tmp_path = filepath + '.tmp'
+        with open(tmp_path, 'wb') as f:
+            f.write(new_file)
+        os.replace(tmp_path, filepath)
+        return True
+
+
+def _update_fz_header(filepath: str, wcs_solution: Dict) -> bool:
+    """Write WCS keywords into a .fits.fz file header."""
+    from astropy.io import fits
+    with fits.open(filepath, mode='update', memmap=False) as hdul:
+        hdr = hdul[1].header
+        for key in _WCS_KEYS:
+            if key in _WCS_FIXED:
+                val = _WCS_FIXED[key]
+            elif key in wcs_solution:
+                val = wcs_solution[key].strip()
+            else:
+                continue
+            comment = _WCS_COMMENTS.get(key, '')
+            # Convert numeric values
+            try:
+                if key in ('CTYPE1', 'CTYPE2', 'CUNIT1', 'CUNIT2', 'PLTSOLVD'):
+                    hdr[key] = (val, comment)
+                else:
+                    hdr[key] = (float(val), comment)
+            except (ValueError, TypeError):
+                hdr[key] = (val, comment)
+    return True
+
+
+def solve_and_update_header(filepath: str, solver: 'PlateSolver',
+                             tmp_dir: str = None) -> Dict:
+    """
+    Solve a single LIGHT frame and write WCS back to its header.
+
+    For XISF: converts to temp FITS (with binning for large images),
+    solves with ASTAP, adjusts WCS for binning, updates XISF header in-place.
+    For FITS: solves with ASTAP -update directly.
+
+    Returns:
+        dict with 'solved' (bool), 'message' (str), optionally 'ra', 'dec'
+    """
+    if tmp_dir is None:
+        tmp_dir = tempfile.gettempdir()
+
+    ftype = _get_file_type(filepath)
+    is_xisf = ftype == 'xisf'
+    is_fz = ftype == 'fz'
+
+    try:
+        # Quick header check
+        keywords = _read_header(filepath)
+
+        if keywords is None:
+            return {'solved': False, 'message': 'Cannot read header'}
+        if 'CRVAL1' in keywords:
+            return {'solved': True, 'message': 'Already solved'}
+        if is_calibration_frame(keywords):
+            return {'solved': False, 'message': 'Calibration frame (skipped)'}
+
+        hints = _extract_solve_hints(keywords)
+        bin_factor = 1
+
+        if is_xisf:
+            import xisf as xisf_lib
+            from astropy.io import fits
+            import numpy as np
+
+            xisf_obj = xisf_lib.XISF(filepath)
+            data = xisf_obj.read_image(0)
+            meta = xisf_obj.get_images_metadata()[0]
+            fits_kw = meta.get('FITSKeywords', {})
+
+            hdr = fits.Header()
+            for key in ['NAXIS1', 'NAXIS2', 'BITPIX', 'OBJECT', 'RA', 'DEC',
+                        'FOCALLEN', 'XPIXSZ', 'YPIXSZ', 'XBINNING', 'YBINNING',
+                        'EXPOSURE', 'DATE-OBS', 'IMAGETYP', 'FILTER', 'GAIN',
+                        'INSTRUME', 'TELESCOP', 'EQUINOX']:
+                if key in fits_kw:
+                    val = fits_kw[key][0]['value']
+                    comment = fits_kw[key][0].get('comment', '')
+                    try:
+                        if '.' in str(val):
+                            val = float(val)
+                        else:
+                            val = int(val)
+                    except (ValueError, TypeError):
+                        pass
+                    try:
+                        hdr[key] = (val, comment)
+                    except Exception:
+                        pass
+
+            img = data[:, :, 0] if data.ndim == 3 and data.shape[2] == 1 else data
+            if data.ndim == 3 and data.shape[0] == 1:
+                img = data[0, :, :]
+
+            # Bin large images for faster solving
+            max_dim = max(img.shape)
+            if max_dim > 4000:
+                bin_factor = max(1, max_dim // 3000)
+                h, w = img.shape
+                nh = h // bin_factor
+                nw = w // bin_factor
+                img = img[:nh * bin_factor, :nw * bin_factor].reshape(
+                    nh, bin_factor, nw, bin_factor
+                ).mean(axis=(1, 3)).astype(np.uint16)
+                if 'XPIXSZ' in hdr:
+                    hdr['XPIXSZ'] = hdr['XPIXSZ'] * bin_factor
+                if 'YPIXSZ' in hdr:
+                    hdr['YPIXSZ'] = hdr['YPIXSZ'] * bin_factor
+                hdr['NAXIS1'] = nw
+                hdr['NAXIS2'] = nh
+
+            tmp_fits = os.path.join(tmp_dir, f"solve_{os.getpid()}_{id(filepath) & 0xFFFF}.fits")
+            hdu = fits.PrimaryHDU(data=img, header=hdr)
+            hdu.writeto(tmp_fits, overwrite=True)
+            del data, img
+        elif is_fz:
+            # .fits.fz: ASTAP can't read fpack'd files, decompress to temp FITS
+            from astropy.io import fits
+            import numpy as np
+
+            with fits.open(filepath, memmap=False) as hdul:
+                data = hdul[1].data
+                hdr = hdul[1].header.copy()
+
+            img = data
+            if data.ndim == 3 and data.shape[0] == 1:
+                img = data[0, :, :]
+
+            # Bin large images for faster solving
+            max_dim = max(img.shape)
+            if max_dim > 4000:
+                bin_factor = max(1, max_dim // 3000)
+                h, w = img.shape
+                nh = h // bin_factor
+                nw = w // bin_factor
+                img = img[:nh * bin_factor, :nw * bin_factor].reshape(
+                    nh, bin_factor, nw, bin_factor
+                ).mean(axis=(1, 3)).astype(np.uint16)
+                if 'XPIXSZ' in hdr:
+                    hdr['XPIXSZ'] = hdr['XPIXSZ'] * bin_factor
+                if 'YPIXSZ' in hdr:
+                    hdr['YPIXSZ'] = hdr['YPIXSZ'] * bin_factor
+                hdr['NAXIS1'] = nw
+                hdr['NAXIS2'] = nh
+
+            tmp_fits = os.path.join(tmp_dir, f"solve_{os.getpid()}_{id(filepath) & 0xFFFF}.fits")
+            hdu = fits.PrimaryHDU(data=img, header=hdr)
+            hdu.writeto(tmp_fits, overwrite=True)
+            del data, img
+        else:
+            tmp_fits = filepath
+
+        needs_tmp_cleanup = is_xisf or is_fz
+
+        # Build ASTAP command
+        cmd = [solver.executable, '-f', tmp_fits]
+        if 'fov' in hints:
+            cmd.extend(['-fov', f"{hints['fov']:.3f}"])
+        else:
+            cmd.extend(['-fov', '0'])
+        if 'ra_h' in hints:
+            cmd.extend(['-ra', f"{hints['ra_h']:.6f}"])
+        if 'spd' in hints:
+            cmd.extend(['-spd', f"{hints['spd']:.4f}"])
+        cmd.extend(['-r', '30'])
+
+        if not needs_tmp_cleanup:
+            # Plain FITS: ASTAP can write WCS directly
+            cmd.append('-update')
+
+        # Specify database path
+        db_info = solver.check_database()
+        if db_info and db_info.get('path'):
+            cmd.extend(['-d', db_info['path']])
+
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+
+        # Read solution from .ini
+        ini_file = tmp_fits.rsplit('.', 1)[0] + '.ini'
+        wcs_solution = {}
+        solved = False
+
+        if os.path.exists(ini_file):
+            with open(ini_file, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if '=' in line:
+                        k, v = line.split('=', 1)
+                        wcs_solution[k.strip()] = v.strip()
+            solved = wcs_solution.get('PLTSOLVD', 'F') == 'T'
+
+        # Cleanup temp files
+        for ext_clean in ['.ini', '.wcs', '.log']:
+            tmp_clean = tmp_fits.rsplit('.', 1)[0] + ext_clean
+            if os.path.exists(tmp_clean):
+                try:
+                    os.remove(tmp_clean)
+                except OSError:
+                    pass
+        if needs_tmp_cleanup and os.path.exists(tmp_fits):
+            try:
+                os.remove(tmp_fits)
+            except OSError:
+                pass
+
+        if not solved:
+            error_msg = wcs_solution.get('ERROR', 'Unknown error')
+            return {'solved': False, 'message': f"Solve failed: {error_msg}"}
+
+        # Adjust WCS for binning
+        if bin_factor > 1:
+            for key in ['CRPIX1', 'CRPIX2']:
+                if key in wcs_solution:
+                    wcs_solution[key] = f"{float(wcs_solution[key]) * bin_factor:.6E}"
+            for key in ['CDELT1', 'CDELT2', 'CD1_1', 'CD1_2', 'CD2_1', 'CD2_2']:
+                if key in wcs_solution:
+                    wcs_solution[key] = f"{float(wcs_solution[key]) / bin_factor:.15E}"
+
+        # Write WCS to file header
+        if is_xisf:
+            _update_xisf_header_inplace(filepath, wcs_solution)
+        elif is_fz:
+            # Write WCS to .fits.fz header
+            _update_fz_header(filepath, wcs_solution)
+        # For plain FITS, -update already wrote it
+
+        ra = wcs_solution.get('CRVAL1', '?')
+        dec = wcs_solution.get('CRVAL2', '?')
+        return {'solved': True, 'message': f"Solved: RA={ra}, DEC={dec}",
+                'ra': ra, 'dec': dec}
+
+    except Exception as e:
+        logger.warning(f"Batch solve error for {filepath}: {e}")
+        return {'solved': False, 'message': f"Error: {str(e)}"}
