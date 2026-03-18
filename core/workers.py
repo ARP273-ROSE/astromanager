@@ -778,6 +778,92 @@ class UnifiedWorker(QThread):
                 except Exception as e:
                     print(f"  ⚠️ Plate solving error: {e}")
 
+            # ── Batch solve all unsolved lights (write WCS to headers) ──
+            if options.get('batch_solve_lights', False) and not self.should_stop:
+                print("\n🔭 Batch solving unsolved LIGHT frames...")
+                self.progress_signal.emit(0, 1, "Batch solving lights...")
+                try:
+                    from modules.plate_solving import (
+                        PlateSolver, scan_light_files, is_file_solved,
+                        solve_and_update_header, find_astap_executable,
+                        is_calibration_frame, _read_header
+                    )
+                    from core.config import get_config
+                    _bs_config = get_config()
+                    _bs_path = _bs_config.get('plate_solving.astap_path')
+                    _bs_timeout = _bs_config.get('plate_solving.timeout_sec', 60)
+
+                    bs_solver = PlateSolver(timeout=_bs_timeout, executable_path=_bs_path)
+                    if bs_solver.is_available():
+                        # Scan for raw LIGHT files
+                        print(f"  Scanning {folder} for raw LIGHT files...")
+                        all_lights = scan_light_files(folder)
+                        print(f"  Found {len(all_lights)} raw LIGHT files")
+
+                        # Filter unsolved (also skip calibration frames by header)
+                        unsolved = []
+                        already_solved_count = 0
+                        cal_skipped = 0
+                        for i, fp in enumerate(all_lights):
+                            if self.should_stop:
+                                break
+                            if i % 200 == 0 and i > 0:
+                                self.progress_signal.emit(i, len(all_lights), "Checking headers...")
+                            kw = _read_header(fp)
+                            if kw is None:
+                                continue
+                            if 'CRVAL1' in kw:
+                                already_solved_count += 1
+                            elif is_calibration_frame(kw):
+                                cal_skipped += 1
+                            else:
+                                unsolved.append(fp)
+
+                        if cal_skipped:
+                            print(f"  Already solved: {already_solved_count}, "
+                                  f"calibration skipped: {cal_skipped}, to solve: {len(unsolved)}")
+                        else:
+                            print(f"  Already solved: {already_solved_count}, to solve: {len(unsolved)}")
+
+                        if unsolved and not self.should_stop:
+                            import tempfile as _tmpmod
+                            _tmp_dir = _tmpmod.mkdtemp(prefix='astro_batch_solve_')
+                            bs_solved = 0
+                            bs_failed = 0
+
+                            for idx, fp in enumerate(unsolved):
+                                if self.should_stop:
+                                    break
+                                self.progress_signal.emit(idx, len(unsolved),
+                                    f"Solving {idx+1}/{len(unsolved)}: {os.path.basename(fp)[:40]}")
+
+                                result = solve_and_update_header(fp, bs_solver, _tmp_dir)
+                                if result.get('solved') and result.get('message', '') != 'Already solved':
+                                    bs_solved += 1
+                                elif not result.get('solved'):
+                                    bs_failed += 1
+                                    if bs_failed <= 10:
+                                        print(f"  ❌ {os.path.basename(fp)[:50]}: {result.get('message', '?')}")
+
+                                if (idx + 1) % 100 == 0:
+                                    print(f"  Progress: {idx+1}/{len(unsolved)} "
+                                          f"(solved: {bs_solved}, failed: {bs_failed})")
+
+                            # Cleanup
+                            import shutil as _shmod
+                            _shmod.rmtree(_tmp_dir, ignore_errors=True)
+
+                            print(f"  Batch solve complete: {bs_solved} solved, "
+                                  f"{bs_failed} failed, {already_solved_count} already solved")
+                        elif not unsolved:
+                            print("  All LIGHT files already have WCS - nothing to solve")
+                    else:
+                        print("  ASTAP not found - skipping batch solve")
+                except ImportError as e:
+                    print(f"  Batch solve module not available: {e}")
+                except Exception as e:
+                    print(f"  Batch solve error: {e}")
+
             # ── Split targets by focal length (reducer vs native) ──
             if not self.should_stop:
                 data_by_target = _split_targets_by_focal(data_by_target)

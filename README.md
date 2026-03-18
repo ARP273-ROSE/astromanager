@@ -68,6 +68,11 @@
 - ASTAP and Astrometry.net support with auto-detection
 - Automatic focal reducer detection (0.67x, 0.72x, 0.8x)
 - WCS solution and header updates (REDUCER, corrected FOCAL)
+- **Batch solve all lights**: Solve all unsolved raw LIGHT frames (FITS/XISF/FITS.FZ) and write WCS to headers
+  - Automatic binning for large images (faster solving)
+  - In-place XISF header update (modifies only ~8 KB header, not 60 MB image data)
+  - Skips PixInsight processed files, masters, and calibration frames (Dark/Flat/Bias)
+  - Uses IMAGETYP/FRAME header keywords for accurate frame type detection
 
 ### Weather Integration *(Optional)*
 - Historical weather data via Open-Meteo API (free, no API key)
