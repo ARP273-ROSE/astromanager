@@ -1208,6 +1208,7 @@ class AstroManagerWindow(QMainWindow):
                 <li><b>Sélection dossier :</b> Choisissez le dossier contenant vos fichiers FITS/XISF</li>
                 <li><b>SIMBAD :</b> Résout les noms d'objets (M31 = NGC 224) et fusionne automatiquement</li>
                 <li><b>Plate solving :</b> Détecte les réducteurs focaux via ASTAP</li>
+                <li><b>Solve all lights :</b> Résout en masse tous les LIGHT bruts non résolus (FITS/XISF/FITS.FZ) et écrit la solution WCS dans les headers. Ignore automatiquement les fichiers traités par PixInsight, les masters, et les frames de calibration (Dark/Flat/Bias)</li>
                 <li><b>Météo :</b> Récupère les conditions météo historiques pour chaque nuit</li>
                 <li><b>Workers :</b> 0 = auto-détection optimale selon votre CPU/RAM/disque</li>
                 <li><b>Sorties :</b> Graphiques, rapport PDF/LaTeX, miniatures, CSV AstroBin</li>
@@ -1285,6 +1286,7 @@ class AstroManagerWindow(QMainWindow):
                 <li><b>Folder selection:</b> Choose the folder containing your FITS/XISF files</li>
                 <li><b>SIMBAD:</b> Resolves object names (M31 = NGC 224) and auto-merges</li>
                 <li><b>Plate solving:</b> Detects focal reducers via ASTAP</li>
+                <li><b>Solve all lights:</b> Batch-solve all unsolved raw LIGHT frames (FITS/XISF/FITS.FZ) and write WCS solution to headers. Automatically skips PixInsight processed files, masters, and calibration frames (Dark/Flat/Bias)</li>
                 <li><b>Weather:</b> Fetches historical weather data for each observation night</li>
                 <li><b>Workers:</b> 0 = optimal auto-detection based on CPU/RAM/disk</li>
                 <li><b>Outputs:</b> Graphs, PDF/LaTeX report, thumbnails, AstroBin CSV</li>
