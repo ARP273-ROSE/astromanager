@@ -193,6 +193,10 @@ class AstroManagerWindow(QMainWindow):
         from gui.tabs.asiair_import_tab import ASIAIRImportTab
         from gui.tabs.pixinsight_tab import PixInsightTab
         from gui.tabs.mount_tab import MountTab
+        from gui.tabs.sky_chart_tab import SkyChartTab
+        from gui.tabs.calendar_tab import CalendarTab
+        from gui.tabs.quality_tab import QualityTab
+        from gui.tabs.wbpp_export_tab import WBPPExportTab
 
         self.analysis_tab = AnalysisTab()
         self.compression_tab = CompressionTab()
@@ -205,6 +209,10 @@ class AstroManagerWindow(QMainWindow):
         self.asiair_tab = ASIAIRImportTab()
         self.pixinsight_tab = PixInsightTab()
         self.mount_tab = MountTab()
+        self.sky_chart_tab = SkyChartTab()
+        self.calendar_tab = CalendarTab()
+        self.quality_tab = QualityTab()
+        self.wbpp_tab = WBPPExportTab()
 
         self.tab_widget.addTab(self.analysis_tab,
             self._tr("📊 Analysis", "📊 Analyse"))
@@ -216,8 +224,16 @@ class AstroManagerWindow(QMainWindow):
             self._tr("✏️ Header Editor", "✏️ Éditeur Headers"))
         self.tab_widget.addTab(self.flat_tab,
             self._tr("📸 Flat Manager", "📸 Gestion Flats"))
+        self.tab_widget.addTab(self.quality_tab,
+            self._tr("⭐ Quality", "⭐ Qualité"))
+        self.tab_widget.addTab(self.wbpp_tab,
+            self._tr("📦 WBPP Export", "📦 Export WBPP"))
         self.tab_widget.addTab(self.target_tab,
             self._tr("🎯 Target Tracking", "🎯 Suivi Cibles"))
+        self.tab_widget.addTab(self.sky_chart_tab,
+            self._tr("🌌 Sky Chart", "🌌 Carte du Ciel"))
+        self.tab_widget.addTab(self.calendar_tab,
+            self._tr("📅 Calendar", "📅 Calendrier"))
         self.tab_widget.addTab(self.pixinsight_tab,
             self._tr("🔬 PixInsight", "🔬 PixInsight"))
         self.tab_widget.addTab(self.mount_tab,
@@ -1231,12 +1247,49 @@ class AstroManagerWindow(QMainWindow):
                 <li><b>Scan :</b> Détecte et groupe les flat frames par setup/filtre/date</li>
                 <li><b>Couverture :</b> Vérifie que chaque combinaison a assez de flats</li>
             </ul>
-            <h3>5. Suivi Cibles</h3>
+            <h3>5. Analyse Qualité (⭐ Qualité)</h3>
+            <ul>
+                <li><b>Détection d'étoiles :</b> Algorithme automatique sur chaque frame FITS/XISF</li>
+                <li><b>Fitting PSF :</b> Moffat 2D elliptique avec fallback Gaussien pour chaque étoile</li>
+                <li><b>Métriques par frame :</b> FWHM, HFR, excentricité, SNR, nombre d'étoiles, bruit de fond</li>
+                <li><b>Score qualité 0-100 :</b> Composite pondéré (FWHM 35%, excentricité 20%, SNR 20%, étoiles 15%, rondeur 10%)</li>
+                <li><b>Rejet automatique :</b> Suggestions de rejet basées sur des seuils configurables</li>
+                <li><b>Détection de traînées :</b> Test de Rayleigh R² pour détecter les satellites/avions</li>
+                <li><b>Carte d'étoiles :</b> Double-clic sur un frame pour visualiser les étoiles détectées</li>
+                <li><b>Export :</b> Liste de fichiers acceptés (.txt) et rapport complet (.csv)</li>
+            </ul>
+            <h3>6. Export WBPP (📦 Export WBPP)</h3>
+            <ul>
+                <li><b>Organisation :</b> Structure de dossiers prête pour PixInsight WBPP</li>
+                <li><b>Templates :</b> Tokens configurables ({OBJECT}, {FILTER}, {IMAGETYP}, {DATE}, {CAMERA})</li>
+                <li><b>Calibrations :</b> Matching automatique Darks/Flats/Biases par caméra, température, filtre</li>
+                <li><b>Scoring :</b> Score de qualité 0-1 pour chaque correspondance de calibration</li>
+                <li><b>Aperçu :</b> Visualisation de l'arborescence avant export</li>
+                <li><b>Modes :</b> Copie, lien symbolique, ou aperçu seul</li>
+            </ul>
+            <h3>7. Suivi Cibles</h3>
             <ul>
                 <li><b>Historique :</b> Temps d'observation par cible au fil du temps</li>
                 <li><b>Prévisions :</b> Météo et visibilité des cibles pour les prochaines nuits</li>
             </ul>
-            <h3>6. Historique & Statistiques</h3>
+            <h3>8. Carte du Ciel (🌌 Carte du Ciel)</h3>
+            <ul>
+                <li><b>Projection Aitoff/Mollweide :</b> Carte céleste interactive de toutes vos cibles</li>
+                <li><b>Couleurs :</b> Par type d'objet (galaxie, nébuleuse, amas...), filtre, ou temps d'intégration</li>
+                <li><b>Taille :</b> Proportionnelle au temps d'intégration total par cible</li>
+                <li><b>Voie Lactée :</b> Bande galactique semi-transparente (activable)</li>
+                <li><b>Interactif :</b> Survol = info cible, clic = sélection</li>
+                <li><b>Export :</b> PNG haute résolution (200 DPI)</li>
+            </ul>
+            <h3>9. Calendrier (📅 Calendrier)</h3>
+            <ul>
+                <li><b>Vue mensuelle :</b> Grille calendrier avec données de session par jour</li>
+                <li><b>Vue annuelle :</b> Heatmap GitHub-style (52 semaines × 7 jours)</li>
+                <li><b>Statistiques :</b> Nuits d'imagerie, intégration totale, meilleur mois, plus longue série</li>
+                <li><b>Détails :</b> Clic sur un jour pour voir le détail par cible/filtre/télescope</li>
+                <li><b>Export :</b> PNG du calendrier</li>
+            </ul>
+            <h3>10. Historique & Statistiques</h3>
             <ul>
                 <li><b>Tableau de bord :</b> Statistiques globales (cibles, intégration, nuits, HFR)</li>
                 <li><b>Classement cibles :</b> Cibles triées par temps d'intégration</li>
@@ -1247,7 +1300,7 @@ class AstroManagerWindow(QMainWindow):
                 <li><b>Export/Import :</b> JSON (complet) ou CSV (tableur) pour sauvegarde et partage</li>
                 <li><b>Sauvegarde auto :</b> Base de données sauvegardée automatiquement à la fermeture</li>
             </ul>
-            <h3>7. Base de Données</h3>
+            <h3>11. Base de Données</h3>
             <ul>
                 <li><b>Caméras :</b> 1 600+ capteurs avec specs (pixel, bruit, QE, résolution)</li>
                 <li><b>Télescopes :</b> 3 900+ modèles avec ouverture, focale, rapport f/</li>
@@ -1255,12 +1308,12 @@ class AstroManagerWindow(QMainWindow):
                 <li><b>Cibles :</b> 32 900+ objets astronomiques (Messier, NGC, IC, Arp, etc.)</li>
                 <li><b>Recherche :</b> Recherche par nom + filtre par marque/type/catalogue</li>
             </ul>
-            <h3>8. Espace Disque</h3>
+            <h3>12. Espace Disque</h3>
             <ul>
                 <li><b>Analyse :</b> Répartition FITS/XISF/FZ et espace utilisé</li>
                 <li><b>Organisation :</b> Organiser les fichiers par type/date/cible avec des presets</li>
             </ul>
-            <h3>9. Exécutable Autonome (.exe)</h3>
+            <h3>13. Exécutable Autonome (.exe)</h3>
             <ul>
                 <li><b>Windows :</b> Lancez <code>build.bat</code> pour créer <code>dist\\AstroManager\\AstroManager.exe</code></li>
                 <li><b>Linux / macOS :</b> Lancez <code>./build.sh</code> pour créer <code>dist/AstroManager/AstroManager</code></li>
@@ -1268,7 +1321,7 @@ class AstroManagerWindow(QMainWindow):
                 <li><b>Données :</b> Configuration et base de données restent dans le répertoire du projet</li>
                 <li><b>Multiplateforme :</b> Fonctionne sur Windows, Linux et macOS</li>
             </ul>
-            <h3>10. Mises à jour</h3>
+            <h3>14. Mises à jour</h3>
             <ul>
                 <li><b>Automatique :</b> Vérifie les nouvelles versions au démarrage (opt-in dans Réglages)</li>
                 <li><b>Manuel :</b> Aide > Vérifier les mises à jour</li>
@@ -1309,12 +1362,49 @@ class AstroManagerWindow(QMainWindow):
                 <li><b>Scan:</b> Detect and group flat frames by setup/filter/date</li>
                 <li><b>Coverage:</b> Verify each combination has enough flats</li>
             </ul>
-            <h3>5. Target Tracking</h3>
+            <h3>5. Quality Analysis (⭐ Quality)</h3>
+            <ul>
+                <li><b>Star detection:</b> Automatic algorithm on each FITS/XISF frame</li>
+                <li><b>PSF fitting:</b> 2D elliptical Moffat with Gaussian fallback for each star</li>
+                <li><b>Per-frame metrics:</b> FWHM, HFR, eccentricity, SNR, star count, background noise</li>
+                <li><b>Quality score 0-100:</b> Weighted composite (FWHM 35%, eccentricity 20%, SNR 20%, stars 15%, roundness 10%)</li>
+                <li><b>Auto-reject:</b> Rejection suggestions based on configurable thresholds</li>
+                <li><b>Trail detection:</b> Rayleigh R² test for satellite/aircraft trails</li>
+                <li><b>Star map:</b> Double-click a frame to visualize detected stars</li>
+                <li><b>Export:</b> Accepted file list (.txt) and full report (.csv)</li>
+            </ul>
+            <h3>6. WBPP Export (📦 WBPP Export)</h3>
+            <ul>
+                <li><b>Organization:</b> Folder structure ready for PixInsight WBPP</li>
+                <li><b>Templates:</b> Configurable tokens ({OBJECT}, {FILTER}, {IMAGETYP}, {DATE}, {CAMERA})</li>
+                <li><b>Calibrations:</b> Auto-matching Darks/Flats/Biases by camera, temperature, filter</li>
+                <li><b>Scoring:</b> Quality score 0-1 for each calibration match</li>
+                <li><b>Preview:</b> Folder tree visualization before export</li>
+                <li><b>Modes:</b> Copy, symlink, or preview-only</li>
+            </ul>
+            <h3>7. Target Tracking</h3>
             <ul>
                 <li><b>History:</b> Observation time per target over time</li>
                 <li><b>Forecast:</b> Weather and target visibility for upcoming nights</li>
             </ul>
-            <h3>6. History & Statistics</h3>
+            <h3>8. Sky Chart (🌌 Sky Chart)</h3>
+            <ul>
+                <li><b>Aitoff/Mollweide projection:</b> Interactive celestial map of all your targets</li>
+                <li><b>Colors:</b> By object type (galaxy, nebula, cluster...), filter, or integration time</li>
+                <li><b>Size:</b> Proportional to total integration time per target</li>
+                <li><b>Milky Way:</b> Semi-transparent galactic band (toggleable)</li>
+                <li><b>Interactive:</b> Hover = target info, click = selection</li>
+                <li><b>Export:</b> High-resolution PNG (200 DPI)</li>
+            </ul>
+            <h3>9. Calendar (📅 Calendar)</h3>
+            <ul>
+                <li><b>Monthly view:</b> Calendar grid with session data per day</li>
+                <li><b>Yearly view:</b> GitHub-style heatmap (52 weeks × 7 days)</li>
+                <li><b>Statistics:</b> Imaging nights, total integration, best month, longest streak</li>
+                <li><b>Details:</b> Click a day to see per-target/filter/telescope breakdown</li>
+                <li><b>Export:</b> Calendar as PNG</li>
+            </ul>
+            <h3>10. History & Statistics</h3>
             <ul>
                 <li><b>Dashboard:</b> Global stats (targets, integration, nights, HFR)</li>
                 <li><b>Target Rankings:</b> Targets sorted by integration time</li>
@@ -1325,7 +1415,7 @@ class AstroManagerWindow(QMainWindow):
                 <li><b>Export/Import:</b> JSON (complete) or CSV (spreadsheet) for backup and sharing</li>
                 <li><b>Auto-save:</b> Database automatically backed up on exit</li>
             </ul>
-            <h3>7. Database Browser</h3>
+            <h3>11. Database Browser</h3>
             <ul>
                 <li><b>Cameras:</b> 1,600+ sensors with specs (pixel size, noise, QE, resolution)</li>
                 <li><b>Telescopes:</b> 3,900+ models with aperture, focal length, f-ratio</li>
@@ -1333,12 +1423,12 @@ class AstroManagerWindow(QMainWindow):
                 <li><b>Targets:</b> 32,900+ astronomical objects (Messier, NGC, IC, Arp, etc.)</li>
                 <li><b>Search:</b> Search by name + filter by brand/type/catalog</li>
             </ul>
-            <h3>8. Disk Space</h3>
+            <h3>12. Disk Space</h3>
             <ul>
                 <li><b>Analysis:</b> FITS/XISF/FZ breakdown and space usage</li>
                 <li><b>Organization:</b> Organize files by type/date/target with presets</li>
             </ul>
-            <h3>9. Standalone Executable (.exe)</h3>
+            <h3>13. Standalone Executable (.exe)</h3>
             <ul>
                 <li><b>Windows:</b> Run <code>build.bat</code> to create <code>dist\\AstroManager\\AstroManager.exe</code></li>
                 <li><b>Linux / macOS:</b> Run <code>./build.sh</code> to create <code>dist/AstroManager/AstroManager</code></li>
@@ -1346,7 +1436,7 @@ class AstroManagerWindow(QMainWindow):
                 <li><b>Data:</b> Configuration and database remain in the project directory</li>
                 <li><b>Cross-platform:</b> Works on Windows, Linux, and macOS</li>
             </ul>
-            <h3>10. Updates</h3>
+            <h3>14. Updates</h3>
             <ul>
                 <li><b>Automatic:</b> Checks for new versions on startup (opt-in via Settings)</li>
                 <li><b>Manual:</b> Help > Check for Updates</li>
@@ -1418,6 +1508,15 @@ class AstroManagerWindow(QMainWindow):
                 logger.info(f"Auto-save: database backed up to {backup_path}")
         except Exception as e:
             logger.warning(f"Auto-save backup failed: {e}")
+
+        # WAL checkpoint + close DB connection
+        try:
+            from core.database import get_db
+            db = get_db()
+            db.checkpoint()
+            db.close_connection()
+        except Exception as e:
+            logger.warning(f"WAL checkpoint failed: {e}")
 
         if self.bug_reporter:
             self.bug_reporter.uninstall_global_handler()

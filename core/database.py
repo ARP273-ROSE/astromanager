@@ -110,6 +110,22 @@ class DatabaseManager:
             if _thread_local._depth == 0:
                 _thread_local.connection.commit()
 
+    def checkpoint(self):
+        """Force a WAL checkpoint to merge WAL into main DB file.
+
+        Uses TRUNCATE mode to fully merge all WAL data and reset the WAL file
+        to zero bytes, ensuring NAS sync tools always copy a complete DB.
+        Falls back to PASSIVE if TRUNCATE fails (e.g. concurrent readers).
+        """
+        if hasattr(_thread_local, 'connection') and _thread_local.connection is not None:
+            try:
+                _thread_local.connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            except Exception:
+                try:
+                    _thread_local.connection.execute("PRAGMA wal_checkpoint(PASSIVE)")
+                except Exception:
+                    pass
+
     def close_connection(self):
         """Close the thread-local database connection if open."""
         if hasattr(_thread_local, 'connection') and _thread_local.connection is not None:
@@ -254,6 +270,8 @@ class DatabaseManager:
             self._migrate_to_v2(cursor)
         if current_version < 3:
             self._migrate_to_v3(cursor)
+        if current_version < 4:
+            self._migrate_to_v4(cursor)
 
     def _migrate_to_v2(self, cursor):
         """Migration v2: PixInsight processing tables."""
@@ -489,6 +507,86 @@ class DatabaseManager:
 
         cursor.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (3)")
         logger.info("Database migrated to schema version 3 (MountMonitor tables)")
+
+    def _migrate_to_v4(self, cursor):
+        """Migration v4: Tags, workflow stages, and frame quality metrics."""
+        # Tags table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS tags (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE NOT NULL,
+                color TEXT DEFAULT '#94b8c8',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Many-to-many: tags ↔ observations
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS observation_tags (
+                observation_id INTEGER NOT NULL,
+                tag_id INTEGER NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (observation_id, tag_id),
+                FOREIGN KEY (observation_id) REFERENCES observations(id) ON DELETE CASCADE,
+                FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE
+            )
+        """)
+
+        # Many-to-many: tags ↔ targets
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS target_tags (
+                target_id INTEGER NOT NULL,
+                tag_id INTEGER NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (target_id, tag_id),
+                FOREIGN KEY (target_id) REFERENCES targets(id) ON DELETE CASCADE,
+                FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE
+            )
+        """)
+
+        # Workflow stage column on targets (Stage / WIP / Archive)
+        try:
+            cursor.execute("ALTER TABLE targets ADD COLUMN workflow_stage TEXT DEFAULT 'stage'")
+        except Exception:
+            pass  # Column may already exist
+
+        # Frame quality metrics table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS frame_quality (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                file_path TEXT NOT NULL,
+                file_hash TEXT,
+                star_count INTEGER,
+                fwhm_median REAL,
+                fwhm_std REAL,
+                hfr_median REAL,
+                eccentricity_median REAL,
+                snr_median REAL,
+                background_level REAL,
+                background_noise REAL,
+                trailing_detected INTEGER DEFAULT 0,
+                quality_score REAL,
+                rejection_flag INTEGER DEFAULT 0,
+                rejection_reasons TEXT,
+                plate_scale REAL,
+                analysis_time_ms REAL,
+                analyzed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(file_path)
+            )
+        """)
+
+        # Indexes
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_tags_name ON tags(name)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_obs_tags_obs ON observation_tags(observation_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_obs_tags_tag ON observation_tags(tag_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_target_tags_target ON target_tags(target_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_target_tags_tag ON target_tags(tag_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_fq_path ON frame_quality(file_path)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_fq_score ON frame_quality(quality_score)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_targets_workflow ON targets(workflow_stage)")
+
+        cursor.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (4)")
+        logger.info("Database migrated to schema version 4 (tags, workflow, quality)")
 
     def _check_integrity(self):
         """Run PRAGMA integrity_check on the database"""
@@ -783,6 +881,173 @@ class DatabaseManager:
                 INSERT OR REPLACE INTO header_cache (file_path, file_hash, header_data)
                 VALUES (?, ?, ?)
             """, (file_path, file_hash, json.dumps(header_data)))
+
+    # =========================================================================
+    # Tag Management
+    # =========================================================================
+
+    def create_tag(self, name: str, color: str = '#94b8c8') -> int:
+        """Create a new tag. Returns tag id."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT OR IGNORE INTO tags (name, color) VALUES (?, ?)",
+                (name, color)
+            )
+            cursor.execute("SELECT id FROM tags WHERE name = ?", (name,))
+            return cursor.fetchone()[0]
+
+    def get_all_tags(self) -> List[Dict]:
+        """Get all tags."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM tags ORDER BY name")
+            return [dict(row) for row in cursor.fetchall()]
+
+    def delete_tag(self, tag_id: int):
+        """Delete a tag and all its associations."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM observation_tags WHERE tag_id = ?", (tag_id,))
+            cursor.execute("DELETE FROM target_tags WHERE tag_id = ?", (tag_id,))
+            cursor.execute("DELETE FROM tags WHERE id = ?", (tag_id,))
+
+    def update_tag(self, tag_id: int, name: Optional[str] = None, color: Optional[str] = None):
+        """Update tag name and/or color."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            if name is not None:
+                cursor.execute("UPDATE tags SET name = ? WHERE id = ?", (name, tag_id))
+            if color is not None:
+                cursor.execute("UPDATE tags SET color = ? WHERE id = ?", (color, tag_id))
+
+    def add_tag_to_target(self, target_id: int, tag_id: int):
+        """Associate a tag with a target."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT OR IGNORE INTO target_tags (target_id, tag_id) VALUES (?, ?)",
+                (target_id, tag_id)
+            )
+
+    def remove_tag_from_target(self, target_id: int, tag_id: int):
+        """Remove a tag association from a target."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "DELETE FROM target_tags WHERE target_id = ? AND tag_id = ?",
+                (target_id, tag_id)
+            )
+
+    def get_target_tags(self, target_id: int) -> List[Dict]:
+        """Get all tags for a target."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT t.* FROM tags t
+                JOIN target_tags tt ON t.id = tt.tag_id
+                WHERE tt.target_id = ?
+                ORDER BY t.name
+            """, (target_id,))
+            return [dict(row) for row in cursor.fetchall()]
+
+    def add_tag_to_observation(self, observation_id: int, tag_id: int):
+        """Associate a tag with an observation."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT OR IGNORE INTO observation_tags (observation_id, tag_id) VALUES (?, ?)",
+                (observation_id, tag_id)
+            )
+
+    def get_observation_tags(self, observation_id: int) -> List[Dict]:
+        """Get all tags for an observation."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT t.* FROM tags t
+                JOIN observation_tags ot ON t.id = ot.tag_id
+                WHERE ot.observation_id = ?
+                ORDER BY t.name
+            """, (observation_id,))
+            return [dict(row) for row in cursor.fetchall()]
+
+    # =========================================================================
+    # Workflow Stage Management
+    # =========================================================================
+
+    def set_workflow_stage(self, target_id: int, stage: str):
+        """Set workflow stage for a target (stage/wip/archive)."""
+        if stage not in ('stage', 'wip', 'archive'):
+            raise ValueError(f"Invalid workflow stage: {stage}")
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE targets SET workflow_stage = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (stage, target_id)
+            )
+
+    def get_targets_by_stage(self, stage: str) -> List[Dict]:
+        """Get all targets with a given workflow stage."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT * FROM targets WHERE workflow_stage = ? ORDER BY last_observed DESC",
+                (stage,)
+            )
+            return [dict(row) for row in cursor.fetchall()]
+
+    # =========================================================================
+    # Frame Quality Cache
+    # =========================================================================
+
+    def save_frame_quality(self, filepath: str, metrics: Dict):
+        """Save frame quality analysis results."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT OR REPLACE INTO frame_quality (
+                    file_path, star_count, fwhm_median, fwhm_std,
+                    hfr_median, eccentricity_median, snr_median,
+                    background_level, background_noise,
+                    trailing_detected, quality_score,
+                    rejection_flag, rejection_reasons,
+                    plate_scale, analysis_time_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                filepath,
+                metrics.get('star_count', 0),
+                metrics.get('fwhm_median', 0.0),
+                metrics.get('fwhm_std', 0.0),
+                metrics.get('hfr_median', 0.0),
+                metrics.get('eccentricity_median', 0.0),
+                metrics.get('snr_median', 0.0),
+                metrics.get('background_level', 0.0),
+                metrics.get('background_noise', 0.0),
+                1 if metrics.get('trailing_detected') else 0,
+                metrics.get('quality_score', 0.0),
+                1 if metrics.get('rejection_flag') else 0,
+                json.dumps(metrics.get('rejection_reasons', [])),
+                metrics.get('plate_scale', 0.0),
+                metrics.get('analysis_time_ms', 0.0),
+            ))
+
+    def get_frame_quality(self, filepath: str) -> Optional[Dict]:
+        """Get cached frame quality metrics."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT * FROM frame_quality WHERE file_path = ?", (filepath,)
+            )
+            row = cursor.fetchone()
+            if row:
+                result = dict(row)
+                try:
+                    result['rejection_reasons'] = json.loads(result.get('rejection_reasons', '[]'))
+                except (json.JSONDecodeError, TypeError):
+                    result['rejection_reasons'] = []
+                return result
+            return None
 
     # =========================================================================
     # Utility Functions
