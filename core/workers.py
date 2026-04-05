@@ -50,6 +50,8 @@ class JobType(Enum):
     TARGET_UPDATE = "target_update"
     DISK_ANALYSIS = "disk_analysis"
     ASIAIR_IMPORT = "asiair_import"
+    QUALITY_ANALYSIS = "quality_analysis"
+    WBPP_EXPORT = "wbpp_export"
 
 
 @dataclass
