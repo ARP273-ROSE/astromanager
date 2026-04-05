@@ -23,6 +23,9 @@ env/
 .claude/
 CLAUDE.md
 
+# LaTeX source (only compiled PDFs are committed)
+*.tex
+
 # LaTeX build artifacts
 *.aux
 *.log
