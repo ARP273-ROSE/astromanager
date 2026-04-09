@@ -197,6 +197,9 @@ class AstroManagerWindow(QMainWindow):
         from gui.tabs.calendar_tab import CalendarTab
         from gui.tabs.quality_tab import QualityTab
         from gui.tabs.wbpp_export_tab import WBPPExportTab
+        from gui.tabs.analytics_tab import AnalyticsTab
+        from gui.tabs.image_viewer_tab import ImageViewerTab
+        from gui.tabs.cross_section_tab import CrossSectionTab
 
         self.analysis_tab = AnalysisTab()
         self.compression_tab = CompressionTab()
@@ -213,6 +216,9 @@ class AstroManagerWindow(QMainWindow):
         self.calendar_tab = CalendarTab()
         self.quality_tab = QualityTab()
         self.wbpp_tab = WBPPExportTab()
+        self.analytics_tab = AnalyticsTab()
+        self.image_viewer_tab = ImageViewerTab()
+        self.cross_section_tab = CrossSectionTab()
 
         self.tab_widget.addTab(self.analysis_tab,
             self._tr("📊 Analysis", "📊 Analyse"))
@@ -244,6 +250,12 @@ class AstroManagerWindow(QMainWindow):
             self._tr("📚 Database", "📚 Base de Données"))
         self.tab_widget.addTab(self.disk_tab,
             self._tr("💾 Disk Space", "💾 Espace Disque"))
+        self.tab_widget.addTab(self.analytics_tab,
+            self._tr("📊 Analytics", "📊 Analytique"))
+        self.tab_widget.addTab(self.image_viewer_tab,
+            self._tr("🔭 Image Viewer", "🔭 Visionneuse"))
+        self.tab_widget.addTab(self.cross_section_tab,
+            self._tr("📐 Cross-Section", "📐 Coupe Transversale"))
 
     def _init_menu(self):
         """Initialize menu bar"""
@@ -1328,8 +1340,38 @@ class AstroManagerWindow(QMainWindow):
                 <li><b>Ignorer :</b> Bouton « Ignorer cette version » pour ne plus être notifié</li>
                 <li><b>Fréquence :</b> Un seul appel HTTPS vers GitHub, max une fois par 24h</li>
             </ul>
+            <h3>15. Analytique N.I.N.A. (📊 Analytique)</h3>
+            <ul>
+                <li><b>Import CSV :</b> Parcourir un dossier de sessions N.I.N.A. — importe récursivement ImageMetaData.csv et WeatherData.csv</li>
+                <li><b>Efficacité :</b> Graphique barres comparant heures d'obscurité astronomique vs temps d'intégration par nuit</li>
+                <li><b>Corrélations :</b> Nuage de points X/Y (température, humidité, vent vs HFR, FWHM, excentricité) avec régression linéaire, Pearson r, Spearman ρ, R², bande de confiance 95%</li>
+                <li><b>Séries temporelles :</b> Médiane nocturne d'une métrique avec moyennes mobiles 7j et 30j</li>
+                <li><b>Équipement :</b> Statistiques par combinaison télescope+caméra+filtre (HFR, FWHM, excentricité médians)</li>
+                <li><b>Notes de session :</b> Notes texte par date d'observation, associées à une cible ou générales</li>
+            </ul>
+            <h3>16. Visionneuse d'Images (🔭 Visionneuse)</h3>
+            <ul>
+                <li><b>Navigateur :</b> Scanne un dossier pour les fichiers FITS/XISF, tri par nom/FWHM/étoiles, navigation clavier et molette</li>
+                <li><b>Affichage :</b> pyqtgraph (GPU) ou matplotlib, zoom/pan, valeur pixel sous le curseur</li>
+                <li><b>Autostretch STF :</b> Screen Transfer Function style PixInsight — percentile 0.05-99.95%, MAD shadow clip, MTF midtone</li>
+                <li><b>Carte FWHM :</b> Détection d'étoiles + fitting Moffat 2D elliptique, heatmap vert→rouge avec contours, régression Nadaraya-Watson</li>
+                <li><b>Inspecteur de coins :</b> Grille 3×3 de crops 100% (TL/Top/TR/Left/Center/Right/BL/Bottom/BR) avec statistiques FWHM par cellule</li>
+                <li><b>Overlay étoiles :</b> Cercles colorés par qualité FWHM sur l'image</li>
+                <li><b>Headers :</b> Ctrl+H pour voir tous les mots-clés FITS/XISF dans un dialogue modal</li>
+                <li><b>Cache :</b> LRU 5 images + prefetch ±2 voisins pour navigation fluide</li>
+            </ul>
+            <h3>17. Coupe Transversale (📐 Coupe Transversale)</h3>
+            <ul>
+                <li><b>Double visionneuse :</b> Chargez deux images FITS/XISF côte à côte pour comparaison</li>
+                <li><b>Profil de ligne :</b> Tracez une ligne sur l'image 1, miroir automatique sur l'image 2, courbes d'intensité superposées</li>
+                <li><b>Modes couleur :</b> Luminance (BT.709), Rouge, Vert, Bleu, ou RGB complet</li>
+                <li><b>Histogrammes :</b> 256 bins, échelle log, médianes marquées pour chaque image</li>
+                <li><b>Atténuation filtre :</b> Sélection interactive régions signal/fond, test Welch t, atténuation %, Cohen's d, SNR photon et flux, facteur d'exposition</li>
+                <li><b>Alignement auto :</b> Registration par étoiles via astroalign avec diagnostic (décalage, rotation)</li>
+                <li><b>Export CSV :</b> Profils d'intensité et histogrammes exportables</li>
+            </ul>
             <h3>Raccourcis</h3>
-            <p>Ctrl+, = Réglages | Ctrl+Q = Quitter | Ctrl+` = Console | F1 = Aide</p>
+            <p>Ctrl+, = Réglages | Ctrl+Q = Quitter | Ctrl+` = Console | Ctrl+H = Headers | F1 = Aide</p>
             """)
         else:
             text.setHtml("""
@@ -1443,8 +1485,38 @@ class AstroManagerWindow(QMainWindow):
                 <li><b>Skip:</b> "Skip This Version" button to dismiss specific releases</li>
                 <li><b>Frequency:</b> Single HTTPS call to GitHub, max once per 24 hours</li>
             </ul>
+            <h3>15. N.I.N.A. Analytics (📊 Analytics)</h3>
+            <ul>
+                <li><b>CSV Import:</b> Browse a N.I.N.A. session folder — recursively imports ImageMetaData.csv and WeatherData.csv</li>
+                <li><b>Efficiency:</b> Bar chart comparing astronomical dark hours vs integration time per night</li>
+                <li><b>Correlations:</b> X/Y scatter plot (temperature, humidity, wind vs HFR, FWHM, eccentricity) with linear regression, Pearson r, Spearman ρ, R², 95% confidence band</li>
+                <li><b>Time Series:</b> Nightly median of a selected metric with 7-day and 30-day moving averages</li>
+                <li><b>Equipment:</b> Performance stats per telescope+camera+filter combination (median HFR, FWHM, eccentricity)</li>
+                <li><b>Session Notes:</b> Per-date text notes associated with a target or general session notes</li>
+            </ul>
+            <h3>16. Image Viewer (🔭 Image Viewer)</h3>
+            <ul>
+                <li><b>File browser:</b> Scan a folder for FITS/XISF files, sort by name/FWHM/star count, keyboard and scroll navigation</li>
+                <li><b>Display:</b> pyqtgraph (GPU) or matplotlib fallback, zoom/pan, pixel value under cursor</li>
+                <li><b>STF Autostretch:</b> PixInsight-style Screen Transfer Function — percentile 0.05-99.95%, MAD shadow clip, MTF midtone transfer</li>
+                <li><b>FWHM Heatmap:</b> Star detection + 2D elliptical Moffat fitting, green-to-red overlay with contour lines, Nadaraya-Watson regression</li>
+                <li><b>Corner Inspector:</b> 3×3 grid of 100% crops (TL/Top/TR/Left/Center/Right/BL/Bottom/BR) with per-cell FWHM statistics</li>
+                <li><b>Star Overlay:</b> Circles colored by FWHM quality on the image</li>
+                <li><b>Headers:</b> Ctrl+H to view all FITS/XISF keywords in a modal dialog</li>
+                <li><b>Cache:</b> LRU 5 images + prefetch ±2 neighbors for smooth navigation</li>
+            </ul>
+            <h3>17. Cross-Section (📐 Cross-Section)</h3>
+            <ul>
+                <li><b>Dual viewer:</b> Load two FITS/XISF images side by side for comparison</li>
+                <li><b>Line profile:</b> Draw a line on image 1, auto-mirrored on image 2, overlay intensity curves</li>
+                <li><b>Color modes:</b> Luminance (BT.709), Red, Green, Blue, or full RGB</li>
+                <li><b>Histograms:</b> 256 bins, log scale, median markers for each image</li>
+                <li><b>Filter attenuation:</b> Interactive signal/background region selection, Welch t-test, attenuation %, Cohen's d, photon & flux SNR, exposure factor</li>
+                <li><b>Auto-align:</b> Star-based registration via astroalign with diagnostic (shift, rotation)</li>
+                <li><b>CSV Export:</b> Intensity profiles and histograms exportable</li>
+            </ul>
             <h3>Shortcuts</h3>
-            <p>Ctrl+, = Settings | Ctrl+Q = Quit | Ctrl+` = Console | F1 = Help</p>
+            <p>Ctrl+, = Settings | Ctrl+Q = Quit | Ctrl+` = Console | Ctrl+H = Headers | F1 = Help</p>
             """)
 
         layout.addWidget(text)

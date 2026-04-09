@@ -243,12 +243,221 @@ MOUNT_TIPS = {
 }
 
 
+ANALYTICS_TIPS = {
+    'nina_import_folder': lambda: _tr(
+        "Select the root folder containing N.I.N.A. session data.\n"
+        "The importer will recursively find ImageMetaData.csv\n"
+        "and WeatherData.csv files in all subdirectories.",
+        "Sélectionnez le dossier racine contenant les sessions N.I.N.A.\n"
+        "L'importeur cherchera récursivement les fichiers ImageMetaData.csv\n"
+        "et WeatherData.csv dans tous les sous-dossiers."
+    ),
+    'nina_import_btn': lambda: _tr(
+        "Start importing N.I.N.A. CSV metadata.\n"
+        "Parses exposure metrics (HFR, FWHM, guiding, ADU)\n"
+        "and weather data, then stores them in the database.",
+        "Lancer l'import des métadonnées CSV N.I.N.A.\n"
+        "Parse les métriques d'exposition (HFR, FWHM, guidage, ADU)\n"
+        "et les données météo, puis les stocke en base."
+    ),
+    'efficiency_chart': lambda: _tr(
+        "Imaging efficiency = integration time / astronomical dark hours.\n"
+        "Dark hours = sun below -18° (astronomical twilight).\n"
+        "Higher percentage means more productive sessions.",
+        "Efficacité d'imagerie = temps d'intégration / heures d'obscurité.\n"
+        "Heures sombres = soleil sous -18° (crépuscule astronomique).\n"
+        "Un pourcentage plus élevé = sessions plus productives."
+    ),
+    'correlation_x': lambda: _tr(
+        "Select the X-axis metric for correlation analysis.\n"
+        "Environmental metrics: temperature, humidity, wind, cloud cover.\n"
+        "Equipment: focuser temperature, airmass, sensor temperature.",
+        "Sélectionnez la métrique X pour l'analyse de corrélation.\n"
+        "Métriques environnementales : température, humidité, vent, couverture nuageuse.\n"
+        "Équipement : température focuser, masse d'air, température capteur."
+    ),
+    'correlation_y': lambda: _tr(
+        "Select the Y-axis metric for correlation analysis.\n"
+        "Quality metrics: HFR, FWHM, eccentricity, guiding RMS.\n"
+        "Signal metrics: detected stars, ADU mean/median.",
+        "Sélectionnez la métrique Y pour l'analyse de corrélation.\n"
+        "Métriques qualité : HFR, FWHM, excentricité, RMS guidage.\n"
+        "Métriques signal : étoiles détectées, ADU moyen/médian."
+    ),
+    'correlation_chart': lambda: _tr(
+        "Scatter plot with linear regression line.\n"
+        "Shows Pearson r, Spearman ρ, R² and 95% confidence band.\n"
+        "Filter by telescope, camera, filter, or date range.",
+        "Nuage de points avec droite de régression linéaire.\n"
+        "Affiche Pearson r, Spearman ρ, R² et bande de confiance 95%.\n"
+        "Filtrez par télescope, caméra, filtre ou période."
+    ),
+    'timeseries_metric': lambda: _tr(
+        "Select a metric to plot over time.\n"
+        "Shows nightly median with 7-day and 30-day moving averages.\n"
+        "Useful to track equipment performance trends.",
+        "Sélectionnez une métrique à tracer dans le temps.\n"
+        "Affiche la médiane nocturne avec moyennes mobiles 7j et 30j.\n"
+        "Utile pour suivre les tendances de performance de l'équipement."
+    ),
+    'equipment_table': lambda: _tr(
+        "Performance statistics per telescope+camera+filter combination.\n"
+        "Shows median HFR, FWHM, eccentricity, best HFR, and frame count.\n"
+        "Helps identify your best-performing equipment setups.",
+        "Statistiques de performance par combinaison télescope+caméra+filtre.\n"
+        "Affiche HFR médian, FWHM, excentricité, meilleur HFR, nombre de frames.\n"
+        "Aide à identifier vos configurations d'équipement les plus performantes."
+    ),
+    'session_note_date': lambda: _tr(
+        "Select the observation date for this note.\n"
+        "Notes are stored per session date.",
+        "Sélectionnez la date d'observation pour cette note.\n"
+        "Les notes sont stockées par date de session."
+    ),
+    'session_note_text': lambda: _tr(
+        "Write observation notes for this session.\n"
+        "Equipment changes, weather conditions, issues encountered.\n"
+        "Notes are saved automatically.",
+        "Écrivez vos notes d'observation pour cette session.\n"
+        "Changements d'équipement, conditions météo, problèmes rencontrés.\n"
+        "Les notes sont sauvegardées automatiquement."
+    ),
+    'nina_progress': lambda: _tr(
+        "Import progress for the current N.I.N.A. data import.\n"
+        "Shows percentage of CSV files processed.",
+        "Progression de l'import des données N.I.N.A. en cours.\n"
+        "Affiche le pourcentage de fichiers CSV traités."
+    ),
+    'nina_table': lambda: _tr(
+        "Summary of imported N.I.N.A. sessions.\n"
+        "Shows date, frame count, targets, integration time,\n"
+        "average HFR, filters used, and equipment.",
+        "Résumé des sessions N.I.N.A. importées.\n"
+        "Affiche date, nombre de frames, cibles, temps d'intégration,\n"
+        "HFR moyen, filtres utilisés et équipement."
+    ),
+    'ts_plot_btn': lambda: _tr(
+        "Plot the selected metric over time.\n"
+        "Shows nightly median with 7-day and 30-day moving averages.",
+        "Tracer la métrique sélectionnée dans le temps.\n"
+        "Affiche la médiane nocturne avec moyennes mobiles 7j et 30j."
+    ),
+    'note_target_combo': lambda: _tr(
+        "Select a specific target for this note,\n"
+        "or '(All / General)' for session-wide notes.",
+        "Sélectionnez une cible spécifique pour cette note,\n"
+        "ou '(Tous / Général)' pour les notes de session."
+    ),
+    'notes_table': lambda: _tr(
+        "List of all saved session notes.\n"
+        "Click a row to load the note for editing.",
+        "Liste de toutes les notes de session sauvegardées.\n"
+        "Cliquez sur une ligne pour charger la note à modifier."
+    ),
+}
+
+IMAGE_VIEWER_TIPS = {
+    'iv_browse': lambda: _tr(
+        "Browse for a folder containing FITS/XISF images.\n"
+        "Scans recursively, excludes analysis output folders.",
+        "Parcourir un dossier contenant des images FITS/XISF.\n"
+        "Scan récursif, exclut les dossiers de sortie d'analyse."
+    ),
+    'iv_sort': lambda: _tr(
+        "Sort file list by: name, date, or FWHM.\n"
+        "Click again to reverse order.",
+        "Trier la liste par : nom, date ou FWHM.\n"
+        "Cliquez à nouveau pour inverser l'ordre."
+    ),
+    'iv_stf': lambda: _tr(
+        "Toggle PixInsight-style auto-stretch (STF).\n"
+        "Uses MAD shadow clipping + midtone transfer function.\n"
+        "Display only — measurements always use raw data.",
+        "Activer/désactiver l'auto-stretch style PixInsight (STF).\n"
+        "Utilise clipping ombre MAD + fonction de transfert tons moyens.\n"
+        "Affichage uniquement — les mesures utilisent toujours les données brutes."
+    ),
+    'iv_fwhm_map': lambda: _tr(
+        "Toggle FWHM heatmap overlay on the image.\n"
+        "Green = good focus, yellow = moderate, red = poor.\n"
+        "Shows focus quality variation across the field.",
+        "Activer/désactiver la heatmap FWHM sur l'image.\n"
+        "Vert = bon focus, jaune = moyen, rouge = mauvais.\n"
+        "Montre la variation de qualité du focus sur le champ."
+    ),
+    'iv_stars': lambda: _tr(
+        "Toggle star detection overlay.\n"
+        "Shows detected stars with FWHM labels.\n"
+        "Circle color indicates quality (green=good, red=poor).",
+        "Activer/désactiver la couche de détection d'étoiles.\n"
+        "Affiche les étoiles détectées avec labels FWHM.\n"
+        "La couleur du cercle indique la qualité (vert=bon, rouge=mauvais)."
+    ),
+    'iv_corners': lambda: _tr(
+        "Toggle 3×3 corner inspector grid.\n"
+        "Shows 9 crops at 100% zoom with per-cell FWHM statistics.\n"
+        "Equalized backgrounds for easy visual comparison.",
+        "Activer/désactiver la grille d'inspection 3×3.\n"
+        "Affiche 9 recadrages à 100% zoom avec FWHM par cellule.\n"
+        "Fonds égalisés pour une comparaison visuelle facile."
+    ),
+}
+
+CROSS_SECTION_TIPS = {
+    'cs_image1': lambda: _tr(
+        "Load the reference image (Image 1).\n"
+        "Supports FITS, XISF formats.\n"
+        "This is the base image for comparison.",
+        "Charger l'image de référence (Image 1).\n"
+        "Supporte les formats FITS, XISF.\n"
+        "C'est l'image de base pour la comparaison."
+    ),
+    'cs_image2': lambda: _tr(
+        "Load the comparison image (Image 2).\n"
+        "Should be the same field with different settings.\n"
+        "Images will be auto-cropped to common size.",
+        "Charger l'image de comparaison (Image 2).\n"
+        "Doit être le même champ avec des réglages différents.\n"
+        "Les images seront recadrées à la taille commune."
+    ),
+    'cs_mode': lambda: _tr(
+        "Select interaction mode:\n"
+        "• Line Profile: draw a line to plot intensity cross-section\n"
+        "• Signal Region: select area containing the target signal\n"
+        "• Background Region: select area for background subtraction",
+        "Sélectionner le mode d'interaction :\n"
+        "• Profil Ligne : tracer une ligne pour la coupe d'intensité\n"
+        "• Région Signal : sélectionner la zone contenant le signal\n"
+        "• Région Fond : sélectionner la zone pour la soustraction de fond"
+    ),
+    'cs_color': lambda: _tr(
+        "Color mode for line profile:\n"
+        "Luminance (BT.709), Red, Green, Blue, or all RGB channels.",
+        "Mode couleur pour le profil de ligne :\n"
+        "Luminance (BT.709), Rouge, Vert, Bleu, ou tous les canaux RGB."
+    ),
+    'cs_align': lambda: _tr(
+        "Automatically align Image 2 to Image 1.\n"
+        "Uses astroalign for star-based registration.\n"
+        "Reports shift magnitude and rotation angle.",
+        "Aligner automatiquement l'Image 2 sur l'Image 1.\n"
+        "Utilise astroalign pour le recalage par étoiles.\n"
+        "Rapporte l'amplitude du décalage et l'angle de rotation."
+    ),
+    'cs_export': lambda: _tr(
+        "Export cross-section profiles and analysis to CSV.\n"
+        "Includes distance, intensity values, and histograms.",
+        "Exporter les profils de coupe et l'analyse en CSV.\n"
+        "Inclut distance, valeurs d'intensité et histogrammes."
+    ),
+}
+
+
 def get_tip(key: str) -> str:
     """Get a tooltip text by key. Returns empty string if not found."""
-    tip_fn = PIXINSIGHT_PROCESSING_TIPS.get(key)
-    if tip_fn:
-        return tip_fn()
-    tip_fn = MOUNT_TIPS.get(key)
-    if tip_fn:
-        return tip_fn()
+    for tips_dict in (PIXINSIGHT_PROCESSING_TIPS, MOUNT_TIPS,
+                      ANALYTICS_TIPS, IMAGE_VIEWER_TIPS, CROSS_SECTION_TIPS):
+        tip_fn = tips_dict.get(key)
+        if tip_fn:
+            return tip_fn()
     return ''

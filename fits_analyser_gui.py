@@ -14995,7 +14995,7 @@ def generate_pdf_report_without_latex(data_by_target, global_data, output_folder
             # Aggregate filter data
             filter_data = []
             for date_data in files_by_date.values():
-                for filter_name, time_list in date_data['time_by_filter'].items():
+                for filter_name, time_list in date_data.get('time_by_filter', {}).items():
                     if filter_name not in [row[0] for row in filter_data]:
                         filter_data.append([filter_name, 0, 0])
                     
@@ -15113,13 +15113,13 @@ def generate_graphs(data_by_target, global_data, output_folder):
         # Use files_by_date instead of time_by_filter
         if 'files_by_date' in data:
             for date_data in data['files_by_date'].values():
-                for filter_name, time_list in date_data['time_by_filter'].items():
+                for filter_name, time_list in date_data.get('time_by_filter', {}).items():
                     if filter_name not in filter_times:
                         filter_times[filter_name] = []
                     filter_times[filter_name].extend(time_list)
         else:
             # Fallback to time_by_filter if files_by_date not available
-            for filter_name, time_list in data['time_by_filter'].items():
+            for filter_name, time_list in data.get('time_by_filter', {}).items():
                 if filter_name not in filter_times:
                     filter_times[filter_name] = []
                 filter_times[filter_name].extend(time_list)
@@ -15186,13 +15186,13 @@ def generate_graphs(data_by_target, global_data, output_folder):
             
         if 'files_by_date' in data:
             for date_data in data['files_by_date'].values():
-                for filter_name, time_list in date_data['time_by_filter'].items():
+                for filter_name, time_list in date_data.get('time_by_filter', {}).items():
                     if filter_name not in filter_exposure_times:
                         filter_exposure_times[filter_name] = []
                     filter_exposure_times[filter_name].extend(time_list)
         else:
             # Fallback to time_by_filter if files_by_date not available
-            for filter_name, time_list in data['time_by_filter'].items():
+            for filter_name, time_list in data.get('time_by_filter', {}).items():
                 if filter_name not in filter_exposure_times:
                     filter_exposure_times[filter_name] = []
                 filter_exposure_times[filter_name].extend(time_list)
@@ -15266,7 +15266,7 @@ def generate_graphs(data_by_target, global_data, output_folder):
                 total_time += date_data['total_time']
         else:
             # Fallback to time_by_filter if files_by_date not available
-            total_time = sum(sum(times) for times in data['time_by_filter'].values())
+            total_time = sum(sum(times) for times in data.get('time_by_filter', {}).values())
         target_time_pairs.append((target, total_time))
     
     # Sort by time (descending) and take top 10
@@ -15473,27 +15473,27 @@ def generate_graphs(data_by_target, global_data, output_folder):
             
         if 'files_by_date' in data:
             for date_data in data['files_by_date'].values():
-                all_filters.update(date_data['time_by_filter'].keys())
+                all_filters.update(date_data.get('time_by_filter', {}).keys())
         else:
-            all_filters.update(data['time_by_filter'].keys())
+            all_filters.update(data.get('time_by_filter', {}).keys())
     total_filters = len(all_filters)
-    
+
     # Calculate filter statistics
     filter_stats = {}
     for target, data in data_by_target.items():
         # Skip calibration targets
         if is_calibration_target(target):
             continue
-            
+
         if 'files_by_date' in data:
             for date_data in data['files_by_date'].values():
-                for filter_name, time_list in date_data['time_by_filter'].items():
+                for filter_name, time_list in date_data.get('time_by_filter', {}).items():
                     if filter_name not in filter_stats:
                         filter_stats[filter_name] = {'files': 0, 'time': 0}
                     filter_stats[filter_name]['files'] += len(time_list)
                     filter_stats[filter_name]['time'] += sum(time_list)
         else:
-            for filter_name, time_list in data['time_by_filter'].items():
+            for filter_name, time_list in data.get('time_by_filter', {}).items():
                 if filter_name not in filter_stats:
                     filter_stats[filter_name] = {'files': 0, 'time': 0}
                 filter_stats[filter_name]['files'] += len(time_list)
@@ -15527,7 +15527,7 @@ FILTER DETAILS:
     summary_text += "\nTARGETS:\n"
     for target in targets:
         data = data_by_target[target]
-        target_time = sum(sum(times) for times in data['time_by_filter'].values())
+        target_time = sum(sum(times) for times in data.get('time_by_filter', {}).values())
         target_files = len(data['files'])
         summary_text += f"• {target}: {target_files} files, {format_time_hours_minutes(target_time)}\n"
     

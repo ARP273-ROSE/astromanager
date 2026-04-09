@@ -127,6 +127,32 @@ class GlobalSignalBus(QObject):
     bug_report_result = pyqtSignal(bool, str)  # (was_sent, report_id)
 
     # =========================================================================
+    # N.I.N.A. Import Signals
+    # =========================================================================
+    nina_import_started = pyqtSignal(str)  # folder_path
+    nina_import_progress = pyqtSignal(int, int)  # current, total
+    nina_import_completed = pyqtSignal(dict)  # results_dict
+    nina_import_error = pyqtSignal(str)  # error_message
+
+    # =========================================================================
+    # Analytics Signals
+    # =========================================================================
+    analytics_computed = pyqtSignal(str, dict)  # analysis_type, results
+    analytics_error = pyqtSignal(str, str)  # analysis_type, error
+
+    # =========================================================================
+    # Image Viewer Signals
+    # =========================================================================
+    image_loaded = pyqtSignal(str)  # file_path
+    image_analysis_completed = pyqtSignal(dict)  # results (fwhm_map, stars, etc.)
+
+    # =========================================================================
+    # Cross-Section Signals
+    # =========================================================================
+    cross_section_loaded = pyqtSignal(str, str)  # path1, path2
+    cross_section_result = pyqtSignal(dict)  # analysis_results
+
+    # =========================================================================
     # General Application Signals
     # =========================================================================
     log_message = pyqtSignal(str, str)  # level, message (level: INFO, WARNING, ERROR)

@@ -118,6 +118,20 @@ class AnalysisTab(QWidget):
             "Équivalent au plugin 'Solve Every Light' de NINA mais appliqué rétroactivement."
         ))
         analysis_layout.addWidget(self.cb_batch_solve)
+
+        self.cb_enhanced_resolve = QCheckBox(self._tr(
+            "Enhanced resolution (SESAME + VizieR)",
+            "Résolution avancée (SESAME + VizieR)"
+        ))
+        self.cb_enhanced_resolve.setToolTip(self._tr(
+            "Use SESAME (CDS) and VizieR TAP for enhanced target resolution.\n"
+            "Resolves obscure catalog names (Sh2, LBN, Barnard, Abell, vdB, etc.)\n"
+            "in addition to SIMBAD. Requires internet connection.",
+            "Utiliser SESAME (CDS) et VizieR TAP pour une résolution avancée des cibles.\n"
+            "Résout les noms de catalogues obscurs (Sh2, LBN, Barnard, Abell, vdB, etc.)\n"
+            "en plus de SIMBAD. Nécessite une connexion internet."
+        ))
+        analysis_layout.addWidget(self.cb_enhanced_resolve)
         options_layout.addWidget(analysis_group)
 
         # Output Formats
