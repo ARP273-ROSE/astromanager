@@ -427,10 +427,13 @@ class SkyChartTab(QWidget):
                 for row in rows:
                     ra_val = row['ra']
                     dec_val = row['dec']
+                    if ra_val is None or dec_val is None:
+                        continue
+                    # DB stores RA in degrees (0-360); convert to hours (0-24)
+                    if ra_val >= 24.0:
+                        ra_val = ra_val / 15.0
                     # Validate RA [0, 24) and Dec [-90, 90]
-                    if (ra_val is None or dec_val is None or
-                            not (0.0 <= ra_val < 24.0) or
-                            not (-90.0 <= dec_val <= 90.0)):
+                    if not (0.0 <= ra_val < 24.0) or not (-90.0 <= dec_val <= 90.0):
                         continue
 
                     obj_type = row['object_type'] or ''
