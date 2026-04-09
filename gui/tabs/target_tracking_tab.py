@@ -117,6 +117,26 @@ class TargetTrackingTab(QWidget):
         self.simbad_btn.clicked.connect(self._resolve_simbad_for_target)
         select_layout.addWidget(self.simbad_btn)
 
+        self.enhanced_resolve_btn = QPushButton(self._tr(
+            "🌐 Enhanced Resolve", "🌐 Résolution Avancée"))
+        self.enhanced_resolve_btn.setToolTip(self._tr(
+            "Resolve target via SESAME (CDS) + VizieR TAP for obscure catalog names\n"
+            "(Sh2, LBN, Barnard, Abell, vdB, LDN, RCW, Cederblad, etc.)",
+            "Résoudre la cible via SESAME (CDS) + VizieR TAP pour les catalogues obscurs\n"
+            "(Sh2, LBN, Barnard, Abell, vdB, LDN, RCW, Cederblad, etc.)"
+        ))
+        self.enhanced_resolve_btn.clicked.connect(self._resolve_enhanced)
+        select_layout.addWidget(self.enhanced_resolve_btn)
+
+        self.mosaic_btn = QPushButton(self._tr(
+            "🧩 Detect Mosaic", "🧩 Détecter Mosaïque"))
+        self.mosaic_btn.setToolTip(self._tr(
+            "Detect mosaic panels for the selected target from file names and WCS headers",
+            "Détecter les panneaux de mosaïque pour la cible sélectionnée depuis les noms de fichiers et en-têtes WCS"
+        ))
+        self.mosaic_btn.clicked.connect(self._detect_mosaic)
+        select_layout.addWidget(self.mosaic_btn)
+
         select_layout.addStretch()
         layout.addWidget(select_group)
 
@@ -651,6 +671,8 @@ class TargetTrackingTab(QWidget):
         """Handle successful SIMBAD resolution"""
         self.simbad_btn.setEnabled(True)
         self.simbad_btn.setText(self._tr("🔭 Resolve SIMBAD", "🔭 Résoudre SIMBAD"))
+        self.enhanced_resolve_btn.setEnabled(True)
+        self.enhanced_resolve_btn.setText(self._tr("🌐 Enhanced Resolve", "🌐 Résolution Avancée"))
 
         if not self.current_target:
             return
@@ -687,6 +709,8 @@ class TargetTrackingTab(QWidget):
         """Handle SIMBAD resolution error"""
         self.simbad_btn.setEnabled(True)
         self.simbad_btn.setText(self._tr("🔭 Resolve SIMBAD", "🔭 Résoudre SIMBAD"))
+        self.enhanced_resolve_btn.setEnabled(True)
+        self.enhanced_resolve_btn.setText(self._tr("🌐 Enhanced Resolve", "🌐 Résolution Avancée"))
         QMessageBox.warning(self, self._tr("SIMBAD", "SIMBAD"), msg)
 
     def _fetch_forecast(self):
@@ -898,5 +922,91 @@ class TargetTrackingTab(QWidget):
 
             self._clear_display()
             self._load_targets()
+        except Exception as e:
+            QMessageBox.warning(self, self._tr("Error", "Erreur"), str(e))
+
+    # ── Enhanced Resolution (SESAME + VizieR) ──
+    def _resolve_enhanced(self):
+        """Resolve target via SESAME (CDS) + VizieR TAP."""
+        if not self.current_target:
+            QMessageBox.information(self, self._tr("Info", "Info"),
+                self._tr("Select a target first", "Sélectionnez une cible d'abord"))
+            return
+
+        target_name = self.current_target.get('name', '') if isinstance(self.current_target, dict) else str(self.current_target)
+        if not target_name:
+            return
+
+        self.enhanced_resolve_btn.setEnabled(False)
+        self.enhanced_resolve_btn.setText(self._tr("⏳ Resolving...", "⏳ Résolution..."))
+
+        def _do_resolve():
+            try:
+                from modules.target_resolver import TargetResolver
+                resolver = TargetResolver()
+                result = resolver.resolve(target_name)
+                if result:
+                    self._simbad_result_signal.emit(result)
+                else:
+                    self._simbad_error_signal.emit(
+                        self._tr(f"No results found for '{target_name}'",
+                                 f"Aucun résultat trouvé pour '{target_name}'"))
+            except Exception as e:
+                self._simbad_error_signal.emit(str(e))
+
+        t = threading.Thread(target=_do_resolve, daemon=True)
+        t.start()
+
+    # ── Mosaic Detection ──
+    def _detect_mosaic(self):
+        """Detect mosaic panels for the selected target."""
+        if not self.current_target or not self._last_analysis_results:
+            QMessageBox.information(self, self._tr("Info", "Info"),
+                self._tr("Run analysis first to detect mosaic panels",
+                         "Lancez d'abord une analyse pour détecter les panneaux de mosaïque"))
+            return
+
+        try:
+            from modules.mosaic_composite import MosaicComposite
+            mc = MosaicComposite()
+
+            # Gather file list for this target from analysis results
+            results = self._last_analysis_results
+            target_files = []
+            if isinstance(results, dict):
+                for key in ('files', 'file_list', 'lights'):
+                    if key in results:
+                        items = results[key]
+                        if isinstance(items, list):
+                            target_files = [f.get('path', f) if isinstance(f, dict) else str(f)
+                                            for f in items]
+                            break
+
+            if not target_files:
+                QMessageBox.information(self, self._tr("Info", "Info"),
+                    self._tr("No files found for mosaic detection",
+                             "Aucun fichier trouvé pour la détection de mosaïque"))
+                return
+
+            panels = mc.detect_panels(target_files)
+            n_panels = len(panels.get('panels', []))
+            grid = panels.get('grid_shape', (0, 0))
+
+            if n_panels <= 1:
+                QMessageBox.information(self, self._tr("Mosaic", "Mosaïque"),
+                    self._tr("No mosaic panels detected (single panel or no pattern found)",
+                             "Aucun panneau de mosaïque détecté (panneau unique ou aucun motif trouvé)"))
+            else:
+                QMessageBox.information(self, self._tr("Mosaic", "Mosaïque"),
+                    self._tr(
+                        f"Detected {n_panels} mosaic panels ({grid[0]}x{grid[1]} grid)\n"
+                        f"Use the Image Viewer tab for composite preview.",
+                        f"Détecté {n_panels} panneaux de mosaïque (grille {grid[0]}x{grid[1]})\n"
+                        f"Utilisez l'onglet Visionneuse pour la prévisualisation composite."
+                    ))
+        except ImportError:
+            QMessageBox.warning(self, self._tr("Error", "Erreur"),
+                self._tr("Mosaic module not available",
+                         "Module mosaïque non disponible"))
         except Exception as e:
             QMessageBox.warning(self, self._tr("Error", "Erreur"), str(e))

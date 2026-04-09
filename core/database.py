@@ -272,6 +272,8 @@ class DatabaseManager:
             self._migrate_to_v3(cursor)
         if current_version < 4:
             self._migrate_to_v4(cursor)
+        if current_version < 5:
+            self._migrate_to_v5(cursor)
 
     def _migrate_to_v2(self, cursor):
         """Migration v2: PixInsight processing tables."""
@@ -587,6 +589,125 @@ class DatabaseManager:
 
         cursor.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (4)")
         logger.info("Database migrated to schema version 4 (tags, workflow, quality)")
+
+    def _migrate_to_v5(self, cursor):
+        """Migration v5: N.I.N.A. metadata, imaging efficiency, session notes, equipment performance."""
+        # N.I.N.A. per-frame exposure metadata (from ImageMetaData.csv)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS nina_exposures (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_date DATE NOT NULL,
+                target_name TEXT,
+                timestamp TEXT NOT NULL,
+                filter_name TEXT,
+                exposure_seconds REAL,
+                hfr REAL,
+                hfr_stdev REAL,
+                fwhm REAL,
+                eccentricity REAL,
+                detected_stars INTEGER,
+                guiding_rms_total REAL,
+                guiding_rms_ra REAL,
+                guiding_rms_dec REAL,
+                adu_mean REAL,
+                adu_median REAL,
+                adu_stdev REAL,
+                focuser_position INTEGER,
+                focuser_temp REAL,
+                airmass REAL,
+                sensor_temp REAL,
+                gain INTEGER,
+                telescope TEXT,
+                camera TEXT,
+                binning INTEGER,
+                file_path TEXT,
+                weather_temperature REAL,
+                weather_humidity REAL,
+                weather_cloud_cover REAL,
+                weather_wind_speed REAL,
+                weather_dewpoint REAL,
+                weather_pressure REAL,
+                weather_sky_quality REAL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # N.I.N.A. weather data (from WeatherData.csv)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS nina_weather (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_date DATE NOT NULL,
+                timestamp TEXT NOT NULL,
+                temperature REAL,
+                dewpoint REAL,
+                humidity REAL,
+                pressure REAL,
+                wind_speed REAL,
+                wind_direction REAL,
+                wind_gust REAL,
+                cloud_cover REAL,
+                sky_quality REAL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Imaging efficiency cache (dark hours vs integration)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS imaging_efficiency (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_date DATE NOT NULL UNIQUE,
+                latitude REAL,
+                longitude REAL,
+                dark_hours_seconds REAL,
+                integration_seconds REAL,
+                efficiency_pct REAL,
+                computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Session notes
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS session_notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_date DATE NOT NULL,
+                target_name TEXT,
+                note_text TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(session_date, target_name)
+            )
+        """)
+
+        # Equipment performance cache
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS equipment_performance (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                telescope TEXT NOT NULL,
+                camera TEXT NOT NULL,
+                filter_name TEXT NOT NULL,
+                median_hfr REAL,
+                median_fwhm REAL,
+                median_eccentricity REAL,
+                best_hfr REAL,
+                frame_count INTEGER,
+                last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(telescope, camera, filter_name)
+            )
+        """)
+
+        # Indexes
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_nina_exp_session ON nina_exposures(session_date)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_nina_exp_target ON nina_exposures(target_name)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_nina_exp_ts ON nina_exposures(timestamp)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_nina_exp_filter ON nina_exposures(filter_name)")
+        cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_nina_exp_unique ON nina_exposures(timestamp, file_path)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_nina_weather_session ON nina_weather(session_date)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_nina_weather_ts ON nina_weather(session_date, timestamp)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_efficiency_date ON imaging_efficiency(session_date)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_session_notes_date ON session_notes(session_date)")
+
+        cursor.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (5)")
+        logger.info("Database migrated to schema version 5 (N.I.N.A., efficiency, notes, equipment)")
 
     def _check_integrity(self):
         """Run PRAGMA integrity_check on the database"""
@@ -1082,6 +1203,177 @@ class DatabaseManager:
             """, (days,))
             deleted = cursor.rowcount
             logger.info(f"Cleared {deleted} old cache entries")
+
+    # =========================================================================
+    # N.I.N.A. Exposure Management
+    # =========================================================================
+
+    def add_nina_exposure(self, data: Dict) -> int:
+        """Add a N.I.N.A. exposure record. Returns row id."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT OR IGNORE INTO nina_exposures (
+                    session_date, target_name, timestamp, filter_name,
+                    exposure_seconds, hfr, hfr_stdev, fwhm, eccentricity,
+                    detected_stars, guiding_rms_total, guiding_rms_ra, guiding_rms_dec,
+                    adu_mean, adu_median, adu_stdev,
+                    focuser_position, focuser_temp, airmass, sensor_temp, gain,
+                    telescope, camera, binning, file_path,
+                    weather_temperature, weather_humidity, weather_cloud_cover,
+                    weather_wind_speed, weather_dewpoint, weather_pressure,
+                    weather_sky_quality
+                ) VALUES (
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                )
+            """, (
+                data.get('session_date'), data.get('target_name'),
+                data.get('timestamp'), data.get('filter_name'),
+                data.get('exposure_seconds'), data.get('hfr'),
+                data.get('hfr_stdev'), data.get('fwhm'),
+                data.get('eccentricity'), data.get('detected_stars'),
+                data.get('guiding_rms_total'), data.get('guiding_rms_ra'),
+                data.get('guiding_rms_dec'),
+                data.get('adu_mean'), data.get('adu_median'), data.get('adu_stdev'),
+                data.get('focuser_position'), data.get('focuser_temp'),
+                data.get('airmass'), data.get('sensor_temp'), data.get('gain'),
+                data.get('telescope'), data.get('camera'),
+                data.get('binning'), data.get('file_path'),
+                data.get('weather_temperature'), data.get('weather_humidity'),
+                data.get('weather_cloud_cover'), data.get('weather_wind_speed'),
+                data.get('weather_dewpoint'), data.get('weather_pressure'),
+                data.get('weather_sky_quality'),
+            ))
+            return cursor.lastrowid
+
+    def add_nina_exposures_batch(self, exposures: List[Dict]) -> int:
+        """Add multiple N.I.N.A. exposures in a single transaction. Returns count."""
+        count = 0
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            for data in exposures:
+                cursor.execute("""
+                    INSERT OR IGNORE INTO nina_exposures (
+                        session_date, target_name, timestamp, filter_name,
+                        exposure_seconds, hfr, hfr_stdev, fwhm, eccentricity,
+                        detected_stars, guiding_rms_total, guiding_rms_ra, guiding_rms_dec,
+                        adu_mean, adu_median, adu_stdev,
+                        focuser_position, focuser_temp, airmass, sensor_temp, gain,
+                        telescope, camera, binning, file_path,
+                        weather_temperature, weather_humidity, weather_cloud_cover,
+                        weather_wind_speed, weather_dewpoint, weather_pressure,
+                        weather_sky_quality
+                    ) VALUES (
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    )
+                """, (
+                    data.get('session_date'), data.get('target_name'),
+                    data.get('timestamp'), data.get('filter_name'),
+                    data.get('exposure_seconds'), data.get('hfr'),
+                    data.get('hfr_stdev'), data.get('fwhm'),
+                    data.get('eccentricity'), data.get('detected_stars'),
+                    data.get('guiding_rms_total'), data.get('guiding_rms_ra'),
+                    data.get('guiding_rms_dec'),
+                    data.get('adu_mean'), data.get('adu_median'), data.get('adu_stdev'),
+                    data.get('focuser_position'), data.get('focuser_temp'),
+                    data.get('airmass'), data.get('sensor_temp'), data.get('gain'),
+                    data.get('telescope'), data.get('camera'),
+                    data.get('binning'), data.get('file_path'),
+                    data.get('weather_temperature'), data.get('weather_humidity'),
+                    data.get('weather_cloud_cover'), data.get('weather_wind_speed'),
+                    data.get('weather_dewpoint'), data.get('weather_pressure'),
+                    data.get('weather_sky_quality'),
+                ))
+                count += cursor.rowcount
+        return count
+
+    def get_nina_exposures(self, session_date: Optional[str] = None,
+                           target_name: Optional[str] = None,
+                           filter_name: Optional[str] = None) -> List[Dict]:
+        """Get N.I.N.A. exposures, optionally filtered."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            query = "SELECT * FROM nina_exposures WHERE 1=1"
+            params = []
+            if session_date:
+                query += " AND session_date = ?"
+                params.append(session_date)
+            if target_name:
+                query += " AND target_name = ?"
+                params.append(target_name)
+            if filter_name:
+                query += " AND filter_name = ?"
+                params.append(filter_name)
+            query += " ORDER BY timestamp"
+            cursor.execute(query, params)
+            return [dict(row) for row in cursor.fetchall()]
+
+    def get_nina_session_dates(self) -> List[str]:
+        """Get all distinct session dates from N.I.N.A. data."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT DISTINCT session_date FROM nina_exposures
+                ORDER BY session_date DESC
+            """)
+            return [row['session_date'] for row in cursor.fetchall()]
+
+    def get_nina_session_summary(self) -> List[Dict]:
+        """Get summary stats per session from N.I.N.A. data."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT session_date,
+                       COUNT(*) as frame_count,
+                       COUNT(DISTINCT target_name) as target_count,
+                       SUM(exposure_seconds) as total_integration,
+                       AVG(hfr) as avg_hfr,
+                       AVG(fwhm) as avg_fwhm,
+                       AVG(guiding_rms_total) as avg_guiding_rms,
+                       GROUP_CONCAT(DISTINCT filter_name) as filters,
+                       GROUP_CONCAT(DISTINCT telescope) as telescopes,
+                       GROUP_CONCAT(DISTINCT camera) as cameras
+                FROM nina_exposures
+                GROUP BY session_date
+                ORDER BY session_date DESC
+            """)
+            return [dict(row) for row in cursor.fetchall()]
+
+    def clear_nina_session(self, session_date: str):
+        """Clear all N.I.N.A. data for a session (for re-import)."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM nina_exposures WHERE session_date = ?", (session_date,))
+            cursor.execute("DELETE FROM nina_weather WHERE session_date = ?", (session_date,))
+
+    # =========================================================================
+    # N.I.N.A. Weather Management
+    # =========================================================================
+
+    def add_nina_weather_batch(self, records: List[Dict]) -> int:
+        """Add multiple N.I.N.A. weather records. Returns count."""
+        count = 0
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            for data in records:
+                cursor.execute("""
+                    INSERT INTO nina_weather (
+                        session_date, timestamp, temperature, dewpoint,
+                        humidity, pressure, wind_speed, wind_direction,
+                        wind_gust, cloud_cover, sky_quality
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    data.get('session_date'), data.get('timestamp'),
+                    data.get('temperature'), data.get('dewpoint'),
+                    data.get('humidity'), data.get('pressure'),
+                    data.get('wind_speed'), data.get('wind_direction'),
+                    data.get('wind_gust'), data.get('cloud_cover'),
+                    data.get('sky_quality'),
+                ))
+                count += 1
+        return count
 
 
 # Global singleton instance

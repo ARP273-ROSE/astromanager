@@ -4,7 +4,7 @@
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg)]()
 
-**AstroManager** is a comprehensive, professional-grade file management suite designed specifically for astrophotographers. It combines powerful FITS/XISF analysis, frame quality scoring, universal compression, PixInsight WBPP export, celestial sky charting, observation calendars, calibration matching, and storage optimization — all in a modern, cosmic-themed interface with 15 organized tabs.
+**AstroManager** is a comprehensive, professional-grade file management suite designed specifically for astrophotographers. It combines powerful FITS/XISF analysis, frame quality scoring, universal compression, PixInsight WBPP export, celestial sky charting, observation calendars, N.I.N.A. analytics, FWHM mapping, cross-section comparison, calibration matching, and storage optimization — all in a modern, cosmic-themed interface with 18 organized tabs.
 
 ---
 
@@ -146,6 +146,50 @@ Inspired by [Athenaeum](https://github.com/eg013ra1n/rustafits)'s DBSCAN cluster
 - **Safe merging**: Dry-run by default, moves observations and recalculates stats
 - **Nearby target search**: Find all targets within a given angular radius
 
+### 📊 N.I.N.A. Analytics *(New in v1.3.0)*
+Inspired by [GalactiLog](https://github.com/chvvkumar/GalactiLog)'s advanced analytics dashboard.
+
+- **N.I.N.A. CSV Import**: Recursive import of ImageMetaData.csv and WeatherData.csv from session folders
+- **Imaging Efficiency**: Bar chart comparing astronomical dark hours (sun < -18°) vs integration time per night
+- **Correlations**: Scatter plot with X/Y metric selection (temperature, humidity, wind, cloud cover vs HFR, FWHM, eccentricity, guiding RMS), linear regression, Pearson r, Spearman ρ, R², 95% confidence band
+- **Time Series**: Nightly median of selected metric with 7-day and 30-day moving averages
+- **Equipment Performance**: Statistics per telescope+camera+filter combination (median HFR, FWHM, eccentricity, frame count)
+- **Session Notes**: Per-date text notes with target association, save/delete
+- **Background processing**: All heavy computation runs in QThread workers (never blocks the UI)
+
+### 🔭 FITS/XISF Image Viewer *(New in v1.3.0)*
+Inspired by [Astronalyze](https://github.com/ricksastro/astronalyze)'s FWHM map and corner inspector.
+
+- **File browser**: Scan folder for FITS/XISF files, sort by name/FWHM/star count, keyboard and scroll navigation
+- **Display**: pyqtgraph (GPU-accelerated) or matplotlib fallback, zoom/pan, pixel value under cursor
+- **STF Autostretch**: PixInsight-style Screen Transfer Function (percentile 0.05–99.95%, MAD shadow clip 2.8×, MTF midtone target 0.25)
+- **FWHM Heatmap**: Star detection (DAOStarFinder or scipy), 2D elliptical Moffat fitting, Nadaraya-Watson kernel regression on 300×300 grid, green-to-red overlay with contour lines
+- **Corner Inspector**: 3×3 grid of 100% crops (9 regions), per-cell FWHM statistics with quality grade color coding
+- **Star Overlay**: Circles colored by FWHM quality on detected stars
+- **Header Viewer**: Ctrl+H opens a modal dialog with all FITS/XISF header keywords
+- **Image Info Panel**: Object name, dimensions, filter, exposure, camera, telescope, date
+- **FWHM Statistics**: Star count, median, mean, std deviation, min, max
+- **Cache**: LRU 5 images + prefetch ±2 neighbors for smooth navigation
+- **Optional**: pyqtgraph ≥ 0.13 (GPU viewer), photutils ≥ 1.5 (DAOStarFinder)
+
+### 📐 Cross-Section Comparison *(New in v1.3.0)*
+Inspired by [AstroCrossSections](https://github.com/brentmantooth/AstroCrossSections)' image comparison with filter analysis.
+
+- **Dual viewer**: Load two FITS/XISF images side by side for comparison
+- **Line profile**: Draw a line on image 1, auto-mirrored on image 2, overlay intensity curves
+- **Color modes**: Luminance (BT.709), Red, Green, Blue, or full RGB channels
+- **Histogram comparison**: 256-bin log-scale histograms with median markers for each image
+- **Filter Attenuation Analysis**:
+  - Interactive signal and background region selection
+  - Welch t-test for statistical significance
+  - Attenuation percentage and magnitude
+  - Cohen's d effect size
+  - SNR: photon noise model and flux ratio methods
+  - Exposure factor computation (SNR² ratio)
+- **Auto-alignment**: astroalign star-based registration with diagnostic (shift, rotation angle)
+- **CSV Export**: Intensity profiles and histograms
+- **Optional**: astroalign (auto-alignment), scikit-image (phase correlation)
+
 ### 🔎 Plate Solving *(Optional)*
 - ASTAP and Astrometry.net support with auto-detection
 - Automatic focal reducer detection (0.67x, 0.72x, 0.8x)
@@ -179,7 +223,7 @@ Inspired by [Athenaeum](https://github.com/eg013ra1n/rustafits)'s DBSCAN cluster
 
 ### 🖥️ Modern Interface
 - Cosmic dark theme with muted neon accents
-- **15-tab** organized workflow
+- **18-tab** organized workflow
 - Bilingual support (English / French) with auto-detection
 - Tooltips on every widget (bilingual)
 - Built-in settings dialog (Ctrl+,)
@@ -322,29 +366,55 @@ chmod +x build.sh
 3. Review statistics: imaging nights, longest streak, best month
 4. Export the calendar as PNG
 
-### 11. 🔬 PixInsight Tab
+### 11. 📊 Analytics Tab *(New)*
+1. Click **Import N.I.N.A. Data** and select your N.I.N.A. session root folder
+2. Review import summary: sessions, exposures, weather records
+3. Switch to **Efficiency** to see dark hours vs integration bar chart
+4. Use **Correlations** to explore environment vs quality metrics scatter plots
+5. Browse **Time Series** for nightly medians with moving averages
+6. Check **Equipment** for per-setup performance stats
+7. Add **Session Notes** for any observation date
+
+### 12. 🔭 Image Viewer Tab *(New)*
+1. Click **Browse** and select a folder of FITS/XISF files
+2. Navigate files in the list (click, arrow keys, or scroll wheel)
+3. Toggle **STF Autostretch** for automatic screen transfer function
+4. Click **Analyze** to compute FWHM map, corner inspector, and star overlay
+5. Toggle overlays: FWHM heatmap, stars, corner inspector grid
+6. Press **Ctrl+H** to view the full FITS/XISF header
+
+### 13. 📐 Cross-Section Tab *(New)*
+1. Load **Image 1** (reference) and **Image 2** (comparison)
+2. Select **Line Profile** mode and draw a line across a feature
+3. Compare intensity profiles in the chart below
+4. Switch to **Signal Region** / **Background Region** for attenuation analysis
+5. Click **Compute** to get Welch t-test, SNR, and exposure factor
+6. Use **Auto-Align** if images are slightly shifted
+7. **Export CSV** for profiles and histograms
+
+### 14. 🔬 PixInsight Tab
 1. Import PixInsight WBPP/FBP processing logs
 2. Analyze per-frame quality metrics and integration results
 
-### 12. 🔭 Mount Tracking Tab
+### 15. 🔭 Mount Tracking Tab
 1. Click **Import .dat** and select a MountMonitor log file (or **Import Folder** for batch)
 2. View tracking quality dashboard: RA/DEC RMS, tracking %, quality grade
 3. Analyze tracking deviation timeline chart (RA/DEC over time)
 4. Review FFT periodic error peaks (worm gear frequency detection)
 5. Browse per-target segment statistics (RMS, range, duration)
 
-### 13. 📈 History & Statistics Tab
+### 16. 📈 History & Statistics Tab
 1. View global overview (targets, integration time, nights, avg HFR)
 2. Browse target rankings, filter stats, equipment usage
 3. Explore temporal trends (monthly, yearly, day-of-week)
 4. Review best observation nights by quality or productivity
 5. Export complete history (JSON) or observations (CSV)
 
-### 14. 📚 Database Browser Tab
+### 17. 📚 Database Browser Tab
 1. Browse built-in databases: cameras, telescopes, filters, targets
 2. Search by name, filter by brand/type/catalog
 
-### 15. 💾 Disk Space Tab
+### 18. 💾 Disk Space Tab
 1. View storage breakdown by format
 2. Review optimization recommendations (compression, dedup, archive)
 3. Organize files using presets (by type, date, target)
@@ -438,7 +508,7 @@ astromanager/
 ├── USER_MANUAL_FR.pdf           # French user manual
 │
 ├── core/
-│   ├── __init__.py              # Version (1.2.0)
+│   ├── __init__.py              # Version (1.3.0)
 │   ├── config.py                # YAML configuration manager
 │   ├── database.py              # SQLite (WAL, tags, workflow, quality cache)
 │   ├── i18n.py                  # Language detection (auto/en/fr)
@@ -447,7 +517,7 @@ astromanager/
 │   └── updater.py               # Update checker coordinator
 │
 ├── gui/
-│   ├── main_window.py           # Main window (15 tabs, menu, console)
+│   ├── main_window.py           # Main window (18 tabs, menu, console)
 │   ├── theme.py                 # Cosmic theme engine + filter normalization
 │   ├── dialogs/
 │   │   ├── bug_report_dialog.py # Crash report & bug report dialogs
@@ -467,6 +537,9 @@ astromanager/
 │       ├── mount_tab.py         # 🔭 Mount Tracking
 │       ├── history_tab.py       # 📈 History & Statistics
 │       ├── database_tab.py      # 📚 Database Browser
+│       ├── analytics_tab.py     # 📊 Analytics (NEW v1.3.0)
+│       ├── image_viewer_tab.py  # 🔭 Image Viewer (NEW v1.3.0)
+│       ├── cross_section_tab.py # 📐 Cross-Section (NEW v1.3.0)
 │       └── disk_space_tab.py    # 💾 Disk Space
 │
 ├── modules/
@@ -482,12 +555,24 @@ astromanager/
 │   ├── observation_history.py   # Observation history stats + export
 │   ├── bug_reporter.py          # Anonymous crash reporting
 │   ├── updater.py               # GitHub update checker & installer
-│   └── file_organizer.py        # File organization with presets
+│   ├── file_organizer.py        # File organization with presets
+│   ├── stf_stretch.py           # STF autostretch (NEW v1.3.0)
+│   ├── fwhm_map.py              # FWHM heatmap analysis (NEW v1.3.0)
+│   ├── corner_inspector.py      # 3x3 corner crop inspector (NEW v1.3.0)
+│   ├── image_alignment.py       # astroalign + phase correlation (NEW v1.3.0)
+│   ├── cross_section.py         # Line profile sampling (NEW v1.3.0)
+│   ├── filter_attenuation.py    # Filter attenuation analysis (NEW v1.3.0)
+│   ├── imaging_efficiency.py    # Dark hours / efficiency (NEW v1.3.0)
+│   ├── session_notes.py         # Session notes CRUD (NEW v1.3.0)
+│   ├── equipment_performance.py # Equipment stats (NEW v1.3.0)
+│   ├── target_resolver.py       # SIMBAD→SESAME→VizieR resolver (NEW v1.3.0)
+│   └── mosaic_composite.py      # Mosaic panel detection (NEW v1.3.0)
 │
 ├── parsers/
 │   ├── base_parser.py           # Data classes and storage functions
 │   ├── pixinsight_log_parser.py # PixInsight WBPP/FBP log parser
-│   └── mountmonitor_parser.py   # MountMonitor .dat/.dti/.fft/.env parser
+│   ├── mountmonitor_parser.py   # MountMonitor .dat/.dti/.fft/.env parser
+│   └── nina_csv_parser.py       # N.I.N.A. CSV metadata parser (NEW v1.3.0)
 │
 ├── analyzers/
 │   ├── pixinsight_analyzer.py   # PixInsight processing analysis
@@ -516,16 +601,17 @@ astromanager/
 
 ---
 
-## Database Schema (v4)
+## Database Schema (v5)
 
-AstroManager uses SQLite in WAL mode with 4 schema migrations:
+AstroManager uses SQLite in WAL mode with 5 schema migrations:
 
 | Version | Tables Added |
 |---------|-------------|
 | **v1** | `targets`, `observations`, `weather_cache`, `header_cache`, `analysis_results` |
 | **v2** | `pixinsight_sessions`, `pixinsight_subframes`, `pixinsight_integrations`, `pixinsight_frame_weights`, `pixinsight_calibrations` |
 | **v3** | `mount_sessions`, `mount_tracking_data`, `mount_time_data`, `mount_fft_data`, `mount_environment_data` |
-| **v4** *(New)* | `tags`, `target_tags`, `observation_tags`, `frame_quality` + `workflow_stage` column on targets |
+| **v4** | `tags`, `target_tags`, `observation_tags`, `frame_quality` + `workflow_stage` column on targets |
+| **v5** *(New)* | `nina_exposures`, `nina_weather`, `imaging_efficiency`, `session_notes`, `equipment_performance` |
 
 ---
 
@@ -608,6 +694,8 @@ AstroManager is designed to work seamlessly from a NAS or any synced folder (Syn
 
 ### Optional
 - astroquery (SIMBAD), scipy (advanced statistics, PSF fitting, DBSCAN clustering)
+- pyqtgraph ≥ 0.13 (GPU-accelerated image viewer), photutils ≥ 1.5 (DAOStarFinder)
+- astroalign (star-based image alignment), scikit-image (phase correlation)
 
 ---
 
@@ -620,6 +708,9 @@ MIT License — see [LICENSE](LICENSE) file
 ## Acknowledgments
 
 - **[Athenaeum / rustafits](https://github.com/eg013ra1n/rustafits)** (Vilen Sharifov) — Inspiration for frame quality analysis (PSF pipeline), WBPP export, sky chart, shoot calendar, calibration scoring, DBSCAN clustering, tags & workflow stages
+- **[Astronalyze](https://github.com/ricksastro/astronalyze)** (ricksastro) — Inspiration for FWHM heatmap, corner inspector, STF autostretch
+- **[GalactiLog](https://github.com/chvvkumar/GalactiLog)** (chvvkumar) — Inspiration for N.I.N.A. CSV analytics, imaging efficiency, target resolver
+- **[AstroCrossSections](https://github.com/brentmantooth/AstroCrossSections)** (brentmantooth) — Inspiration for cross-section comparison, filter attenuation analysis
 - **Astropy** — FITS handling and RICE compression
 - **PyQt6** — GUI framework
 - **SIMBAD** (CDS, Strasbourg) — Astronomical database
