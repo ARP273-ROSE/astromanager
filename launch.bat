@@ -2,6 +2,15 @@
 title AstroManager
 cd /d "%~dp0"
 
+REM === Venv local a chaque PC (pas dans le dossier NAS synchronise) ===
+set "VENV_DIR=%APPDATA%\AstroManager\venv"
+
+REM === If venv already exists and works, skip Python detection ===
+if exist "%VENV_DIR%\Scripts\python.exe" (
+    "%VENV_DIR%\Scripts\python.exe" -c "print('ok')" >nul 2>&1
+    if not errorlevel 1 goto :venv_ok
+)
+
 REM === Find Python (try multiple methods) ===
 set "PYTHON="
 
@@ -20,6 +29,21 @@ python3 --version >nul 2>&1
 if not errorlevel 1 set "PYTHON=python3"
 if defined PYTHON goto :found_python
 
+REM 4. Standard install location (python.org installer)
+for /d %%D in ("%LOCALAPPDATA%\Programs\Python\Python3*") do (
+    if exist "%%D\python.exe" (
+        set "PYTHON=%%D\python.exe"
+        goto :found_python
+    )
+)
+
+REM 5. WindowsApps store Python
+if exist "%LOCALAPPDATA%\Microsoft\WindowsApps\python3.exe" (
+    "%LOCALAPPDATA%\Microsoft\WindowsApps\python3.exe" --version >nul 2>&1
+    if not errorlevel 1 set "PYTHON=%LOCALAPPDATA%\Microsoft\WindowsApps\python3.exe"
+    if defined PYTHON goto :found_python
+)
+
 echo.
 echo  Python not found. Please install Python 3.8+ from python.org
 echo  Make sure to check "Add Python to PATH" during installation.
@@ -28,16 +52,7 @@ pause
 exit /b 1
 
 :found_python
-
-REM === Venv local a chaque PC (pas dans le dossier NAS synchronise) ===
-set "VENV_DIR=%APPDATA%\AstroManager\venv"
-
-REM === Check if venv exists and works ===
-if not exist "%VENV_DIR%\Scripts\python.exe" goto :create_venv
-"%VENV_DIR%\Scripts\python.exe" -c "print('ok')" >nul 2>&1
-if not errorlevel 1 goto :venv_ok
-
-:create_venv
+REM === Create venv ===
 if exist "%VENV_DIR%" (
     echo Recreating virtual environment...
     rmdir /s /q "%VENV_DIR%"
