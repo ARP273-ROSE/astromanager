@@ -52,6 +52,11 @@ class JobType(Enum):
     ASIAIR_IMPORT = "asiair_import"
     QUALITY_ANALYSIS = "quality_analysis"
     WBPP_EXPORT = "wbpp_export"
+    NINA_IMPORT = "nina_import"
+    FWHM_ANALYSIS = "fwhm_analysis"
+    CROSS_SECTION = "cross_section"
+    IMAGE_ALIGNMENT = "image_alignment"
+    MOSAIC_COMPOSITE = "mosaic_composite"
 
 
 @dataclass
@@ -508,6 +513,7 @@ class UnifiedWorker(QThread):
             JobType.WEATHER_FETCH: self._handle_weather_fetch,
             JobType.DISK_ANALYSIS: self._handle_disk_analysis,
             JobType.ASIAIR_IMPORT: self._handle_asiair_import,
+            JobType.NINA_IMPORT: self._handle_nina_import,
         }
 
         handler = handlers.get(job.job_type)
@@ -2103,6 +2109,81 @@ class UnifiedWorker(QThread):
         print(_tr(f"{'=' * 60}", f"{'=' * 60}"))
 
         return {'processed': processed, 'errors': errors, 'total': total}
+
+    def _handle_nina_import(self, params: Dict) -> Dict:
+        """Handle N.I.N.A. CSV metadata import job."""
+        from parsers.nina_csv_parser import NinaCsvParser
+        from core.database import get_db
+        from core.signals import signals
+        from core.i18n import get_lang
+
+        lang = get_lang()
+        def _tr(en, fr):
+            return fr if lang == 'fr' else en
+
+        folder = params.get('folder', '')
+        skip_cal = params.get('skip_calibrations', True)
+
+        print(_tr(f"Scanning N.I.N.A. data in: {folder}",
+                   f"Scan des données N.I.N.A. dans : {folder}"))
+
+        signals.nina_import_started.emit(folder)
+
+        parser = NinaCsvParser(skip_calibrations=skip_cal)
+
+        def _progress(current, total):
+            if self.should_stop:
+                return
+            signals.nina_import_progress.emit(current, total)
+            self.progress_signal.emit(current, total, _tr("Importing N.I.N.A. data...", "Import données N.I.N.A..."))
+
+        result = parser.scan_folder(folder, progress_callback=_progress)
+
+        if self.should_stop:
+            return {'cancelled': True}
+
+        # Store to database
+        db = get_db()
+        exposures = result.get('exposures', [])
+        weather = result.get('weather_records', [])
+
+        if exposures:
+            print(_tr(f"Storing {len(exposures)} exposures to database...",
+                       f"Enregistrement de {len(exposures)} expositions en base..."))
+            count = db.add_nina_exposures_batch(exposures)
+            print(_tr(f"  → {count} exposures stored",
+                       f"  → {count} expositions enregistrées"))
+
+        if weather:
+            print(_tr(f"Storing {len(weather)} weather records...",
+                       f"Enregistrement de {len(weather)} relevés météo..."))
+            wcount = db.add_nina_weather_batch(weather)
+            print(_tr(f"  → {wcount} weather records stored",
+                       f"  → {wcount} relevés météo enregistrés"))
+
+        summary = {
+            'exposures_imported': len(exposures),
+            'weather_imported': len(weather),
+            'sessions': result.get('session_count', 0),
+            'errors': result.get('errors', []),
+        }
+
+        print(_tr(f"\n{'=' * 60}", f"\n{'=' * 60}"))
+        print(_tr(f"✅ N.I.N.A. import complete!",
+                   f"✅ Import N.I.N.A. terminé !"))
+        print(_tr(f"   Sessions: {summary['sessions']}",
+                   f"   Sessions : {summary['sessions']}"))
+        print(_tr(f"   Exposures: {summary['exposures_imported']}",
+                   f"   Expositions : {summary['exposures_imported']}"))
+        print(_tr(f"   Weather records: {summary['weather_imported']}",
+                   f"   Relevés météo : {summary['weather_imported']}"))
+        if summary['errors']:
+            print(_tr(f"   Errors: {len(summary['errors'])}",
+                       f"   Erreurs : {len(summary['errors'])}"))
+        print(_tr(f"{'=' * 60}", f"{'=' * 60}"))
+
+        signals.nina_import_completed.emit(summary)
+        return summary
 
     def stop(self):
         """Stop worker gracefully"""

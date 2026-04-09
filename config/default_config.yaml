@@ -6,7 +6,7 @@
 # ==============================================================================
 
 application:
-  version: "1.0.0"
+  version: "1.3.0"
   language: "auto"  # Options: auto, en, fr
   theme: "cosmic_dark"
   check_updates_on_startup: true  # Check for updates when the application starts
@@ -70,6 +70,26 @@ ui:
 # ==============================================================================
 # Advanced Settings
 # ==============================================================================
+
+nina_import:
+  skip_calibration_targets: true  # Skip dark/flat/bias targets during import
+  timestamp_join_tolerance_sec: 30  # Max seconds between exposure and weather record for join
+
+analytics:
+  efficiency_cache_days: 7  # Recompute efficiency after this many days
+  default_moving_average_days: [7, 30]  # Moving average windows for time series
+  correlation_confidence_level: 0.95  # Confidence level for regression bands
+
+image_viewer:
+  cache_size: 5  # Number of images to keep in LRU cache
+  prefetch_neighbors: 2  # Number of neighboring images to prefetch
+  overview_max_px: 4096  # Maximum overview image size in pixels
+  stf_shadow_clip_mad: 2.8  # STF shadow clipping factor (MAD units)
+  stf_target_median: 0.25  # STF target median brightness
+
+cross_section:
+  interpolation: "bilinear"  # Interpolation method for line sampling
+  default_mode: "luminance"  # Default color mode (luminance, rgb)
 
 advanced:
   # Performance tuning
