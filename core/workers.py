@@ -1106,7 +1106,13 @@ class UnifiedWorker(QThread):
         workers = params.get('workers', 0)
         if workers <= 0:
             cpu_count = multiprocessing.cpu_count()
-            workers = max(2, min(cpu_count - 1, 8))
+            # Use config system which factors in storage type (HDD //2, NAS //3)
+            try:
+                from core.config import get_config
+                cfg_workers = get_config().get_workers()
+            except Exception:
+                cfg_workers = 8
+            workers = max(2, min(cpu_count - 1, cfg_workers))
 
         fmt_label = {'xisf': 'XISF', 'fz': 'FITS.FZ', 'fits': 'FITS'}
         print(_tr(f"🗜️ Converting {total} files → {fmt_label.get(output_format, output_format)} "
@@ -1697,7 +1703,13 @@ class UnifiedWorker(QThread):
         print(_tr(f"\n🗜️ Phase 2: Compressing {total} files → XISF ({profile})...",
                    f"\n🗜️ Phase 2 : Compression de {total} fichiers → XISF ({profile})..."))
 
-        workers = max(2, min(multiprocessing.cpu_count() - 1, 8))
+        # Use config system which factors in storage type (HDD //2, NAS //3)
+        try:
+            from core.config import get_config
+            cfg_workers = get_config().get_workers()
+        except Exception:
+            cfg_workers = 8
+        workers = max(2, min(multiprocessing.cpu_count() - 1, cfg_workers))
 
         tasks = []
         for fp in fits_files:

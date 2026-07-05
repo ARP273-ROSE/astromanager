@@ -900,6 +900,52 @@ def _read_xisf_header(filepath: str) -> Dict[str, Any]:
 # Header writing
 # ---------------------------------------------------------------------------
 
+def _create_atomic_backup(filepath: str, bak: str) -> bool:
+    """
+    Create a backup of *filepath* at *bak* atomically.
+
+    The copy is written to a temporary '.partial' file and only then renamed
+    into place with os.replace(), so *bak* never appears as a zero-byte or
+    partially written file (no 0-octet window). An existing, non-empty backup
+    is kept as-is: it reflects the pristine original from an earlier edit and
+    must NOT be overwritten by a file that may already have been modified.
+
+    Returns True if a valid (non-empty) backup exists after the call.
+    """
+    # Trust an existing, non-empty backup — do not overwrite it with a file
+    # that may already have been modified by a previous partial run.
+    try:
+        if os.path.exists(bak) and os.path.getsize(bak) > 0:
+            return True
+    except OSError:
+        pass
+
+    partial = bak + '.partial'
+    try:
+        shutil.copy2(filepath, partial)
+        # Guard against a source that produced an empty copy.
+        if os.path.getsize(partial) == 0 and os.path.getsize(filepath) > 0:
+            raise IOError(f"Backup copy is empty: {partial}")
+        os.replace(partial, bak)
+        return True
+    except Exception as e:
+        logger.error(f"Failed to create backup {bak}: {e}")
+        try:
+            if os.path.exists(partial):
+                os.remove(partial)
+        except OSError:
+            pass
+        return False
+
+
+def _backup_is_restorable(bak: str) -> bool:
+    """Return True only if *bak* exists and is non-empty (safe to restore)."""
+    try:
+        return os.path.exists(bak) and os.path.getsize(bak) > 0
+    except OSError:
+        return False
+
+
 def write_header_changes(filepath: str, changes: Dict[str, Any],
                          backup: bool = True) -> bool:
     """
@@ -917,14 +963,15 @@ def write_header_changes(filepath: str, changes: Dict[str, Any],
     
     if backup:
         bak = filepath + '.bak'
-        try:
-            # Atomic backup creation — fails if backup already exists
-            fd = os.open(bak, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            os.close(fd)
-            shutil.copy2(filepath, bak)
-        except FileExistsError:
-            pass  # Backup already exists, skip
-    
+        # Create the backup atomically (partial + os.replace). Abort the write
+        # if no valid backup can be guaranteed — never modify the original
+        # without a sound backup to fall back on.
+        if not _create_atomic_backup(filepath, bak):
+            logger.error(
+                f"Aborting header write, backup could not be created: {filepath}"
+            )
+            return False
+
     try:
         if ftype in ('fits', 'fz'):
             return _write_fits_header(filepath, changes)
@@ -935,11 +982,17 @@ def write_header_changes(filepath: str, changes: Dict[str, Any],
             return False
     except Exception as e:
         logger.error(f"Failed to write header for {filepath}: {e}")
-        # Restore backup on failure
+        # Restore backup on failure — only from a valid (non-empty) backup,
+        # never overwrite the original with an empty/partial .bak.
         if backup:
             bak = filepath + '.bak'
-            if os.path.exists(bak):
+            if _backup_is_restorable(bak):
                 shutil.copy2(bak, filepath)
+            else:
+                logger.error(
+                    f"Cannot restore {filepath}: backup missing or empty "
+                    f"({bak}); original left untouched"
+                )
         return False
 
 
@@ -1703,7 +1756,7 @@ def restore_backups(filepaths: List[str]) -> Dict[str, bool]:
     results = {}
     for fp in filepaths:
         bak = fp + '.bak'
-        if os.path.exists(bak):
+        if _backup_is_restorable(bak):
             try:
                 shutil.copy2(bak, fp)
                 os.remove(bak)
@@ -1712,6 +1765,11 @@ def restore_backups(filepaths: List[str]) -> Dict[str, bool]:
                 logger.error(f"Failed to restore {bak}: {e}")
                 results[fp] = False
         else:
+            # Refuse to overwrite the original with a missing/empty backup.
+            if os.path.exists(bak):
+                logger.error(
+                    f"Refusing to restore {fp}: backup is empty ({bak})"
+                )
             results[fp] = False
     return results
 
