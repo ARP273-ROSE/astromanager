@@ -778,19 +778,33 @@ class ObservationHistory:
                 # Build observations from files_by_date (batch dedup) [PERF]
                 files_by_date = target_data.get('files_by_date', {})
 
-                # Collect all obs rows first, then batch-delete + insert in one connection
-                obs_rows = []
+                # Collect all obs rows first, then batch-delete + insert in one connection.
+                # Aggregate by the UNIQUE dedup key (target_id, observation_date, filter,
+                # telescope, camera) BEFORE inserting: telescope/camera are constant for
+                # this target, so the key reduces to (obs_date, filter_name). Two source
+                # entries that collapse to the same key (e.g. dates that truncate to the
+                # same day) would otherwise produce two INSERTs with the same key and
+                # violate idx_obs_dedup -> IntegrityError -> full rollback (no observation
+                # stored for the target). Summing exposure/frame counts keeps all the info.
+                obs_map = {}
                 for date, date_data in files_by_date.items():
                     time_by_filter = date_data.get('time_by_filter', {})
                     for filter_name, exposures in time_by_filter.items():
                         if not exposures:
                             continue
-                        total_exp = sum(exposures)
-                        frame_count = len(exposures)
                         obs_date = str(date)[:10] if date else ''
                         if not obs_date:
                             continue
-                        obs_rows.append((obs_date, filter_name, total_exp, frame_count))
+                        # Normalize filter like the UNIQUE index does
+                        # (COALESCE(filter,'')) so None and '' can never split
+                        # into two keys that then collide in idx_obs_dedup.
+                        key = (obs_date, filter_name or '')
+                        prev_exp, prev_count = obs_map.get(key, (0, 0))
+                        obs_map[key] = (prev_exp + sum(exposures),
+                                        prev_count + len(exposures))
+                obs_rows = [(obs_date, filter_name, total_exp, frame_count)
+                            for (obs_date, filter_name), (total_exp, frame_count)
+                            in obs_map.items()]
 
                 if obs_rows:
                     # DELETE + INSERT in a single transaction to guarantee

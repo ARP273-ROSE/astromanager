@@ -23,13 +23,15 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer
 
-import matplotlib
-matplotlib.use('QtAgg')
-from matplotlib.figure import Figure
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
-from matplotlib.patches import Polygon
-from matplotlib.collections import PathCollection
-import matplotlib.patheffects as patheffects
+# NOTE: matplotlib is imported LAZILY inside the methods that actually build
+# the canvas / draw the chart (see _init_ui, _draw_milky_way, _draw_labels),
+# mirroring calendar_tab.py. This keeps `import gui.tabs.sky_chart_tab` cheap
+# so importing (or, later, deferring the construction of) this tab does not
+# pull the heavy matplotlib stack at application startup.
+# TODO(perf, finding #15b): construct the 18 main-window tabs lazily on first
+# activation so this deferred import is only paid when the Sky Chart tab is
+# opened. Kept eager for now: several tabs subscribe to global signals and are
+# referenced directly by the main window (e.g. history/analysis tabs).
 
 from core.signals import signals
 from core.config import get_config
@@ -368,6 +370,13 @@ class SkyChartTab(QWidget):
         layout.addWidget(self.lbl_status)
 
         # ── Matplotlib canvas ────────────────────────────────────────────
+        # Lazy import: pull matplotlib only when the tab is actually built.
+        import matplotlib
+        matplotlib.use('QtAgg')
+        from matplotlib.figure import Figure
+        from matplotlib.backends.backend_qtagg import (
+            FigureCanvasQTAgg, NavigationToolbar2QT)
+
         self.figure = Figure(facecolor=COLORS['bg_darkest'], dpi=100)
         self.canvas = FigureCanvasQTAgg(self.figure)
         self.canvas.setSizePolicy(
@@ -616,6 +625,8 @@ class SkyChartTab(QWidget):
         if not self.chk_milkyway.isChecked():
             return
 
+        from matplotlib.patches import Polygon  # lazy import
+
         try:
             ra_rad, dec_upper, dec_lower = _galactic_plane_points(
                 n=500, half_width_deg=12.0)
@@ -754,6 +765,8 @@ class SkyChartTab(QWidget):
         """Optionally draw target name labels."""
         if not self.chk_labels.isChecked():
             return
+
+        import matplotlib.patheffects as patheffects  # lazy import
 
         for i, t in enumerate(self._targets):
             ann = ax.annotate(

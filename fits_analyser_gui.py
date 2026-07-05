@@ -600,10 +600,12 @@ def _ensure_xisf_installed():
     except ImportError:
         pass
 
-    print("INFO: 'xisf' library not found, attempting automatic installation (pip install xisf)...")
+    print("INFO: 'xisf' library not found, attempting automatic installation (pip install 'xisf>=0.9,<1')...")
     try:
-        # Use the same Python interpreter that runs this script
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "xisf"])
+        # Use the same Python interpreter that runs this script.
+        # Version bounds pinned (lower from requirements.txt + conservative upper
+        # cap) so a brand-new / compromised upstream release is not pulled. [SEC]
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "xisf>=0.9,<1"])
         from xisf import XISF  # noqa: F401
         XISF_AVAILABLE = True
         print("INFO: 'xisf' library installed successfully.")
@@ -611,7 +613,7 @@ def _ensure_xisf_installed():
         XISF_AVAILABLE = False
         print("WARNING: automatic installation of 'xisf' failed. XISF files will be handled with fallback parser only.")
         print(f"   Error: {e}")
-        print("   You can install it manually with: pip install xisf")
+        print("   You can install it manually with: pip install -r requirements.txt")
 
 try:
     from xisf import XISF
@@ -2549,30 +2551,41 @@ def _read_xisf_manual(file_path):
     import struct
     import zlib
     import numpy as np
-    import xml.etree.ElementTree as ET
-    
+    # Safe XML parsing: prefer defusedxml for XXE / billion-laughs protection,
+    # fall back to stdlib only if it is unavailable. [SEC]
+    try:
+        from defusedxml.ElementTree import fromstring as _xisf_fromstring
+    except ImportError:
+        from xml.etree.ElementTree import fromstring as _xisf_fromstring
+
+    # Reject absurd header lengths before allocating/reading (matches the guard
+    # used in modules/compression.py). [SEC]
+    MAX_HEADER_SIZE = 100 * 1024 * 1024  # 100 MB
+
     try:
         with open(file_path, 'rb') as f:
             # Read signature
             signature = f.read(8)
             if signature != b'XISF0100':
                 return None, None
-            
+
             # Read header length (4 bytes, uint32 LE)
             header_length = struct.unpack('<I', f.read(4))[0]
-            
+            if header_length > MAX_HEADER_SIZE:
+                return None, None
+
             # Skip reserved field (4 bytes only - NOT 8!)
             f.read(4)
-            
+
             # Read XML header
             xml_bytes = f.read(header_length)
             xml_string = xml_bytes.rstrip(b'\x00').decode('utf-8')
-            
+
             # Parse XML (handle with or without XML declaration)
             if xml_string.startswith('<?xml'):
                 xml_string = xml_string[xml_string.index('?>')+2:].strip()
-            
-            root = ET.fromstring(xml_string)
+
+            root = _xisf_fromstring(xml_string)
             
             # Find Image element (with or without namespace)
             ns = {'xisf': 'http://www.pixinsight.com/xisf'}
@@ -3919,7 +3932,9 @@ def open_fits_for_data(file_path, header_only=False, force_format=None):
 
     Args:
         file_path: Path to the FITS or XISF file
-        header_only: If True, for XISF files, skip reading image data for faster header-only access
+        header_only: If True, skip reading image data for faster header-only access
+                     (XISF: skip pixel decode; FITS: return the first memmap=True
+                     open without the second memmap=False open used for data)
         force_format: If 'xisf', open as XISF regardless of extension.
                       If 'fits', open as FITS regardless of extension.
                       If None (default), determine format from file extension.
@@ -3980,6 +3995,10 @@ def open_fits_for_data(file_path, header_only=False, force_format=None):
                 # Fallback if output_verify not supported
                 hdul = fits.open(file_path, memmap=True, ignore_missing_simple=True)
             header = hdul[0].header
+            # Header-only access: the header is already available from the memmap
+            # open, so skip the second (memmap=False) open used for data reads. [PERF]
+            if header_only:
+                return hdul
             if ('BZERO' in header) or ('BSCALE' in header) or ('BLANK' in header):
                 hdul.close()
                 with warnings.catch_warnings():

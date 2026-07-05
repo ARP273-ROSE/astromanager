@@ -20,14 +20,49 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Default configuration paths — portable (project-relative)
+# Read-only bundled resources (the default config) live next to the code / in
+# the frozen bundle. The user's MUTABLE config.yaml must live in a writable,
+# persistent per-user directory — NEVER in sys._MEIPASS (a temp extraction dir,
+# often read-only, and wiped/overwritten by the auto-updater).
 if getattr(sys, 'frozen', False):
     _BASE = Path(sys._MEIPASS)
 else:
     _BASE = Path(__file__).resolve().parent.parent
-CONFIG_DIR = _BASE
-CONFIG_FILE = CONFIG_DIR / 'config.yaml'
 DEFAULT_CONFIG_FILE = _BASE / 'config' / 'default_config.yaml'
+
+
+def _user_data_dir() -> Path:
+    """Persistent, writable directory for mutable app data.
+
+    Kept in sync with core.database._user_data_dir() so config and DB share the
+    same ~/.astromanager (or %APPDATA%/AstroManager on Windows) location.
+    """
+    if sys.platform.startswith('win'):
+        _appdata = os.environ.get('APPDATA')
+        if _appdata:
+            return Path(_appdata) / 'AstroManager'
+    return Path.home() / '.astromanager'
+
+
+CONFIG_DIR = _user_data_dir()
+try:
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+except Exception as _e:  # pragma: no cover - best effort
+    logger.error(f"Could not create config directory {CONFIG_DIR}: {_e}")
+CONFIG_FILE = CONFIG_DIR / 'config.yaml'
+
+# One-time migration: if a config.yaml exists at the LEGACY location (repo root
+# in source mode / _MEIPASS in a frozen build) but NOT at the new user location,
+# copy it over so existing user settings are preserved. The legacy file is left
+# in place (never deleted).
+_LEGACY_CONFIG_FILE = _BASE / 'config.yaml'
+try:
+    if _LEGACY_CONFIG_FILE.exists() and not CONFIG_FILE.exists():
+        import shutil as _shutil
+        _shutil.copy2(str(_LEGACY_CONFIG_FILE), str(CONFIG_FILE))
+        logger.info(f"Migrated config from {_LEGACY_CONFIG_FILE} to {CONFIG_FILE}")
+except Exception as _e:  # pragma: no cover - best effort
+    logger.error(f"Config migration check failed: {_e}")
 
 
 class ConfigManager:

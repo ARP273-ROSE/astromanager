@@ -21,15 +21,73 @@ import threading
 
 logger = logging.getLogger(__name__)
 
-# Database location — portable (project-relative)
+# Database location.
+# MUTABLE data (the DB and its backup) MUST live in a persistent, writable
+# user directory. In a frozen build sys._MEIPASS is a temporary extraction dir
+# (read-only, wiped on exit, replaced by the updater), so it can never hold the
+# database. _MEIPASS / repo root is kept only for read-only bundled resources.
 import platform as _platform
+import shutil as _shutil
 import sys as _sys
+
+
+def _user_data_dir() -> Path:
+    """Persistent, writable directory for mutable app data (DB + backup)."""
+    if _sys.platform.startswith('win'):
+        _appdata = os.environ.get('APPDATA')
+        if _appdata:
+            return Path(_appdata) / 'AstroManager'
+    return Path.home() / '.astromanager'
+
+
+# Read-only resources stay next to the code / in the frozen bundle.
 if getattr(_sys, 'frozen', False):
-    DB_DIR = Path(_sys._MEIPASS)
+    RESOURCE_DIR = Path(_sys._MEIPASS)
 else:
-    DB_DIR = Path(__file__).resolve().parent.parent
+    RESOURCE_DIR = Path(__file__).resolve().parent.parent
+
+# Mutable data lives in the user data dir (created if missing).
+DB_DIR = _user_data_dir()
+try:
+    DB_DIR.mkdir(parents=True, exist_ok=True)
+except Exception as _e:
+    # Extremely rare: fall back to the resource dir so the app still starts.
+    logger.error(f"Could not create user data dir {DB_DIR}: {_e}; "
+                 f"falling back to {RESOURCE_DIR}")
+    DB_DIR = RESOURCE_DIR
+
 DB_PATH = DB_DIR / 'astromanager.db'
 DB_BACKUP_PATH = DB_DIR / 'astromanager_backup.db'
+
+# One-time migration: if a DB exists at the LEGACY location (repo root in source
+# mode, or _MEIPASS in a frozen build) but NOT at the new location, copy it so
+# the user's existing history is preserved. The legacy file is never deleted.
+_LEGACY_DB_PATH = RESOURCE_DIR / 'astromanager.db'
+_LEGACY_BACKUP_PATH = RESOURCE_DIR / 'astromanager_backup.db'
+try:
+    if _LEGACY_DB_PATH.resolve() != DB_PATH.resolve():
+        if _LEGACY_DB_PATH.exists() and not DB_PATH.exists():
+            _shutil.copy2(str(_LEGACY_DB_PATH), str(DB_PATH))
+            logger.info(f"Migrated database from {_LEGACY_DB_PATH} to {DB_PATH}")
+            # Copy WAL/SHM sidecars too so committed-but-not-checkpointed data
+            # is not lost. They form a consistent snapshot with the .db file.
+            for _suffix in ('.db-wal', '.db-shm'):
+                _legacy_sidecar = _LEGACY_DB_PATH.with_suffix(_suffix)
+                if _legacy_sidecar.exists():
+                    try:
+                        _shutil.copy2(str(_legacy_sidecar),
+                                      str(DB_PATH.with_suffix(_suffix)))
+                    except Exception:
+                        pass
+        if _LEGACY_BACKUP_PATH.exists() and not DB_BACKUP_PATH.exists():
+            try:
+                _shutil.copy2(str(_LEGACY_BACKUP_PATH), str(DB_BACKUP_PATH))
+                logger.info(f"Migrated database backup from "
+                            f"{_LEGACY_BACKUP_PATH} to {DB_BACKUP_PATH}")
+            except Exception:
+                pass
+except Exception as _e:
+    logger.error(f"Database migration check failed: {_e}")
 
 # Thread-local storage for database connections
 _thread_local = threading.local()
@@ -721,6 +779,19 @@ class DatabaseManager:
         finally:
             conn.close()
 
+    def _purge_sidecars(self):
+        """Remove the SQLite WAL/SHM sidecars of the main DB.
+
+        A leftover WAL/SHM belongs to the OLD (corrupt) database file; if kept,
+        SQLite would replay it on top of a freshly restored/recreated DB and
+        re-corrupt it. Always purge before copying/renaming the .db file.
+        """
+        for suffix in ('.db-wal', '.db-shm'):
+            try:
+                self.db_path.with_suffix(suffix).unlink(missing_ok=True)
+            except Exception:
+                pass
+
     def _attempt_recovery(self):
         """Attempt to recover from a corrupted database using backup"""
         import shutil
@@ -732,20 +803,55 @@ class DatabaseManager:
                 result = conn.execute("PRAGMA integrity_check").fetchone()
                 conn.close()
                 if result[0] == 'ok':
-                    shutil.copy2(str(DB_BACKUP_PATH), str(self.db_path))
-                    logger.info("Database recovered from backup")
-                    return
+                    # Drop the corrupt DB's stale WAL/SHM before restoring,
+                    # otherwise leftover WAL frames re-corrupt the restore.
+                    self._purge_sidecars()
+                    restored = False
+                    # Prefer the SQLite backup API (WAL-safe, page-validated),
+                    # mirroring backup_database(); fall back to a raw copy.
+                    try:
+                        self.db_path.unlink(missing_ok=True)
+                        src = sqlite3.connect(str(DB_BACKUP_PATH), timeout=30.0)
+                        dst = sqlite3.connect(str(self.db_path), timeout=30.0)
+                        try:
+                            src.backup(dst)
+                            restored = True
+                        finally:
+                            dst.close()
+                            src.close()
+                    except Exception as e:
+                        logger.error(f"SQLite backup-API restore failed, "
+                                     f"falling back to file copy: {e}")
+                        self._purge_sidecars()
+                        shutil.copy2(str(DB_BACKUP_PATH), str(self.db_path))
+                        restored = True
+                    if restored:
+                        logger.info("Database recovered from backup")
+                        return
                 else:
                     logger.error("Backup is also corrupt")
             except Exception as e:
                 logger.error(f"Recovery from backup failed: {e}")
 
-        # Last resort: delete corrupt DB and recreate from scratch
+        # Last resort: quarantine (do NOT delete) the corrupt DB so manual
+        # recovery stays possible, then let the schema be recreated from scratch.
         logger.warning("Recreating database from scratch")
+        self._purge_sidecars()
         try:
-            self.db_path.unlink(missing_ok=True)
-        except Exception:
-            pass
+            if self.db_path.exists():
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                quarantine = self.db_path.with_name(
+                    self.db_path.name + f'.corrupt-{timestamp}')
+                self.db_path.rename(quarantine)
+                logger.warning(f"Corrupt database preserved at {quarantine}")
+        except Exception as e:
+            logger.error(f"Could not quarantine corrupt database: {e}")
+            # If even the rename fails, remove the corrupt file so the app can
+            # still start with a fresh schema.
+            try:
+                self.db_path.unlink(missing_ok=True)
+            except Exception:
+                pass
 
     def backup_database(self) -> Optional[Path]:
         """Create database backup using SQLite backup API (WAL-safe)"""
