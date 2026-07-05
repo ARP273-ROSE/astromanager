@@ -14,6 +14,7 @@ import os
 import sys
 import struct
 import re
+import shutil
 import subprocess
 import logging
 import configparser
@@ -868,15 +869,25 @@ def _update_xisf_header_inplace(filepath: str, wcs_solution: Dict) -> bool:
     new_header_length = len(new_xml_bytes)
 
     if 16 + new_header_length <= att_offset:
-        # Fits in-place — only rewrite header bytes
+        # New header fits in the existing header space: only the header region
+        # changes, but rewrite the whole file to a temporary and os.replace() it
+        # so the original LIGHT is never left partially written (atomic update).
         new_header = b'XISF0100'
         new_header += struct.pack('<I', new_header_length)
         new_header += struct.pack('<I', 0)
         new_header += new_xml_bytes
         new_header += b'\x00' * (att_offset - len(new_header))
 
-        with open(filepath, 'r+b') as f:
+        # Copy the pixel attachment (and any trailing bytes) verbatim.
+        with open(filepath, 'rb') as f:
+            f.seek(att_offset)
+            rest = f.read()
+
+        tmp_path = filepath + '.tmp'
+        with open(tmp_path, 'wb') as f:
             f.write(new_header)
+            f.write(rest)
+        os.replace(tmp_path, filepath)
         return True
     else:
         # Rare: header doesn't fit, must rewrite entire file
@@ -962,6 +973,9 @@ def solve_and_update_header(filepath: str, solver: 'PlateSolver',
 
         hints = _extract_solve_hints(keywords)
         bin_factor = 1
+        # For plain FITS solved with ASTAP '-update' (which rewrites the file in
+        # place), holds the real original path while we solve on a temp copy.
+        fits_update_target = None
 
         if is_xisf:
             import xisf as xisf_lib
@@ -1053,7 +1067,16 @@ def solve_and_update_header(filepath: str, solver: 'PlateSolver',
             hdu.writeto(tmp_fits, overwrite=True)
             del data, img
         else:
-            tmp_fits = filepath
+            # Plain FITS: ASTAP '-update' rewrites the header IN PLACE, which
+            # would mutate the irreplaceable original. Instead, solve on a copy
+            # placed in the SAME directory (so os.replace stays atomic on the
+            # same filesystem) and swap it in only on success.
+            fits_update_target = filepath
+            base_dir = os.path.dirname(filepath) or '.'
+            tmp_fits = os.path.join(
+                base_dir, f".solve_{os.getpid()}_{id(filepath) & 0xFFFF}.fits"
+            )
+            shutil.copy2(filepath, tmp_fits)
 
         needs_tmp_cleanup = is_xisf or is_fz
 
@@ -1109,6 +1132,12 @@ def solve_and_update_header(filepath: str, solver: 'PlateSolver',
                 pass
 
         if not solved:
+            # Discard the plain-FITS working copy; leave the original untouched.
+            if fits_update_target and os.path.exists(tmp_fits):
+                try:
+                    os.remove(tmp_fits)
+                except OSError:
+                    pass
             error_msg = wcs_solution.get('ERROR', 'Unknown error')
             return {'solved': False, 'message': f"Solve failed: {error_msg}"}
 
@@ -1127,7 +1156,10 @@ def solve_and_update_header(filepath: str, solver: 'PlateSolver',
         elif is_fz:
             # Write WCS to .fits.fz header
             _update_fz_header(filepath, wcs_solution)
-        # For plain FITS, -update already wrote it
+        elif fits_update_target:
+            # ASTAP '-update' wrote the WCS into the temp copy; atomically swap
+            # it in for the original (same directory => same filesystem).
+            os.replace(tmp_fits, fits_update_target)
 
         ra = wcs_solution.get('CRVAL1', '?')
         dec = wcs_solution.get('CRVAL2', '?')
@@ -1135,5 +1167,13 @@ def solve_and_update_header(filepath: str, solver: 'PlateSolver',
                 'ra': ra, 'dec': dec}
 
     except Exception as e:
+        # Best-effort: never leave a half-solved plain-FITS working copy behind.
+        # The original is untouched until the final os.replace(), so it is safe.
+        _tmp = locals().get('tmp_fits')
+        if locals().get('fits_update_target') and _tmp and os.path.exists(_tmp):
+            try:
+                os.remove(_tmp)
+            except OSError:
+                pass
         logger.warning(f"Batch solve error for {filepath}: {e}")
         return {'solved': False, 'message': f"Error: {str(e)}"}

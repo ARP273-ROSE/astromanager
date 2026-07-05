@@ -851,6 +851,17 @@ class DiskSpaceTab(QWidget):
                         continue  # Skip files outside source folder
                     dst = os.path.join(dest_path, rel)
                     os.makedirs(os.path.dirname(dst), exist_ok=True)
+                    # Anti-collision: never overwrite an already-archived file.
+                    # Append a _2, _3, ... suffix (before the extension) until free.
+                    if os.path.exists(dst):
+                        base, ext = os.path.splitext(dst)
+                        counter = 2
+                        while os.path.exists(f"{base}_{counter}{ext}"):
+                            counter += 1
+                        dst = f"{base}_{counter}{ext}"
+                        print(self._tr(
+                            f"  Renamed to avoid overwrite: {os.path.basename(fp)} → {os.path.basename(dst)}",
+                            f"  Renommé pour éviter l'écrasement : {os.path.basename(fp)} → {os.path.basename(dst)}"))
                     shutil.move(fp, dst)
                     moved += 1
                 except Exception as e:
