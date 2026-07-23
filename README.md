@@ -194,6 +194,7 @@ Inspired by [AstroCrossSections](https://github.com/brentmantooth/AstroCrossSect
 - ASTAP and Astrometry.net support with auto-detection
 - Automatic focal reducer detection (0.67x, 0.72x, 0.8x)
 - WCS solution and header updates (REDUCER, corrected FOCAL)
+- Reuses an existing solution: files already plate-solved are read straight from their header (RA/Dec, scale, rotation, FOV) instead of being re-solved
 - **Batch solve all lights**: Solve all unsolved raw LIGHT frames (FITS/XISF/FITS.FZ) and write WCS to headers
   - Automatic binning for large images (faster solving)
   - In-place XISF header update (modifies only ~8 KB header, not 60 MB image data)
