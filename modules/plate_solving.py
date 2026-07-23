@@ -713,6 +713,82 @@ def is_file_solved(filepath: str) -> bool:
     return kw is not None and 'CRVAL1' in kw
 
 
+def wcs_info_from_header(keywords: Dict[str, Dict]) -> Dict:
+    """Read an existing WCS solution from a file header, without re-solving.
+
+    Same output shape as PlateSolver.solve_field():
+    {solved, ra, dec, scale (arcsec/px), rotation (deg), width, height, fov_x, fov_y}.
+    Uses the same math as _parse_astap_ini (CDELT preferred, CD matrix fallback).
+    """
+    import math
+    if not keywords or 'CRVAL1' not in keywords:
+        return {'solved': False, 'error': 'No WCS in header'}
+
+    def _f(key, default=0.0):
+        try:
+            return float(keywords[key]['value'])
+        except (KeyError, ValueError, TypeError):
+            return default
+
+    def _i(key, default=0):
+        try:
+            return int(float(keywords[key]['value']))
+        except (KeyError, ValueError, TypeError):
+            return default
+
+    try:
+        ra = _f('CRVAL1')
+        dec = _f('CRVAL2')
+
+        # Plate scale - prefer CDELT (deg/px), fallback to CD matrix
+        cdelt1, cdelt2 = _f('CDELT1'), _f('CDELT2')
+        if cdelt1 != 0 and cdelt2 != 0:
+            scale = (abs(cdelt1) + abs(cdelt2)) / 2.0 * 3600
+        else:
+            cd1_1, cd1_2 = _f('CD1_1'), _f('CD1_2')
+            cd2_1, cd2_2 = _f('CD2_1'), _f('CD2_2')
+            scale_x = math.sqrt(cd1_1**2 + cd2_1**2) * 3600
+            scale_y = math.sqrt(cd1_2**2 + cd2_2**2) * 3600
+            scale = (scale_x + scale_y) / 2.0
+
+        if scale <= 0:
+            return {'solved': False, 'error': 'Invalid scale from header WCS'}
+
+        # Rotation - prefer CROTA2, fallback to CD matrix
+        if 'CROTA2' in keywords:
+            rotation = _f('CROTA2')
+        else:
+            cd1_1, cd2_1 = _f('CD1_1'), _f('CD2_1')
+            rotation = math.degrees(math.atan2(cd2_1, cd1_1)) if (cd1_1 or cd2_1) else 0.0
+
+        # Image dimensions: NAXIS, fallback CRPIX*2
+        naxis1, naxis2 = _i('NAXIS1'), _i('NAXIS2')
+        if naxis1 == 0:
+            crpix1 = _f('CRPIX1')
+            naxis1 = int(crpix1 * 2) if crpix1 > 0 else 0
+        if naxis2 == 0:
+            crpix2 = _f('CRPIX2')
+            naxis2 = int(crpix2 * 2) if crpix2 > 0 else 0
+
+        fov_x = naxis1 * scale / 3600 if naxis1 > 0 else 0  # degrees
+        fov_y = naxis2 * scale / 3600 if naxis2 > 0 else 0
+
+        return {
+            'solved': True,
+            'ra': ra,
+            'dec': dec,
+            'scale': scale,
+            'rotation': rotation,
+            'width': naxis1,
+            'height': naxis2,
+            'fov_x': fov_x,
+            'fov_y': fov_y,
+            'message': 'Read from existing header WCS',
+        }
+    except Exception as e:
+        return {'solved': False, 'error': f'Header WCS parse error: {e}'}
+
+
 def is_calibration_frame(keywords: Dict[str, Dict]) -> bool:
     """Check IMAGETYP/FRAME header to detect calibration frames (DARK/FLAT/BIAS)."""
     for key in ('IMAGETYP', 'FRAME', 'IMTYPE', 'OBSTYPE'):
