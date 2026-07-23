@@ -10635,6 +10635,7 @@ def find_latex_executable():
             
             # Custom installations
             '/opt/tex/bin/pdflatex',
+            '/mnt/apps_pool/texlive/*/bin/*/pdflatex',
             '/usr/local/bin/pdflatex',
             '/usr/bin/pdflatex',
             
