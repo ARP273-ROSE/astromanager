@@ -13,6 +13,7 @@ import shutil
 import tempfile
 import time
 import zipfile
+import hashlib
 import logging
 
 import requests
@@ -27,6 +28,12 @@ EXCLUDED_DIRS = {'config', 'venv', '.venv', '.git', '__pycache__'}
 
 # Maximum download size: 500 MB
 _MAX_DOWNLOAD_BYTES = 500 * 1024 * 1024
+
+# Maximum size for the SHA256SUMS integrity file: 1 MB (it is a few lines of text)
+_MAX_SHA256SUMS_BYTES = 1 * 1024 * 1024
+
+# Name of the release asset holding the archive checksums
+_SHA256SUMS_ASSET_NAME = 'SHA256SUMS'
 
 # Retry configuration
 _MAX_RETRIES = 3
@@ -173,6 +180,106 @@ def _validate_download_url(download_url):
         )
 
 
+def _compute_file_sha256(path):
+    """
+    Compute the hex SHA-256 digest of a file, reading it in chunks.
+
+    Args:
+        path: Path to the file to hash
+
+    Returns:
+        Lowercase hex digest string.
+    """
+    h = hashlib.sha256()
+    with open(path, 'rb') as f:
+        for block in iter(lambda: f.read(65536), b''):
+            h.update(block)
+    return h.hexdigest().lower()
+
+
+def _fetch_release_sha256sums(download_url):
+    """
+    Fetch and parse the SHA256SUMS asset published on the GitHub release that
+    the given archive was downloaded from.
+
+    The checksums are only trusted when they come from the very release whose
+    zipball matches ``download_url`` (guards against pointing at a different
+    release). The SHA256SUMS asset URL is validated against the same allowlist
+    used for archive downloads.
+
+    Args:
+        download_url: The archive (zipball) URL that is being verified.
+
+    Returns:
+        A set of lowercase hex SHA-256 strings listed in the SHA256SUMS file,
+        or None if the matching release publishes no usable SHA256SUMS asset.
+    """
+    resp = _request_with_retry(
+        'get',
+        GITHUB_API,
+        headers={'Accept': 'application/vnd.github.v3+json'},
+        timeout=10,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+
+    # Only trust checksums from the release the archive was actually fetched
+    # from. If the latest release changed in the meantime, refuse (fail-safe).
+    if data.get('zipball_url', '') != download_url:
+        logger.error(
+            "Release mismatch: latest release zipball (%r) does not match the "
+            "archive URL being verified (%r); cannot verify integrity",
+            data.get('zipball_url', ''), download_url,
+        )
+        return None
+
+    sums_url = None
+    for asset in (data.get('assets') or []):
+        name = (asset.get('name') or '').strip()
+        if name.upper() == _SHA256SUMS_ASSET_NAME:
+            sums_url = asset.get('browser_download_url', '') or ''
+            break
+
+    if not sums_url:
+        logger.error("Release publishes no %s asset", _SHA256SUMS_ASSET_NAME)
+        return None
+
+    # Enforce the same trusted-domain allowlist as the archive download.
+    _validate_download_url(sums_url)
+
+    sums_resp = _request_with_retry(
+        'get',
+        sums_url,
+        headers={'Accept': 'application/octet-stream'},
+        timeout=30,
+    )
+    sums_resp.raise_for_status()
+
+    content = sums_resp.content
+    if len(content) > _MAX_SHA256SUMS_BYTES:
+        raise ValueError(
+            f"{_SHA256SUMS_ASSET_NAME} file is unexpectedly large "
+            f"({len(content)} bytes); refusing to parse"
+        )
+
+    hashes = set()
+    for line in content.decode('utf-8', errors='replace').splitlines():
+        line = line.strip()
+        if not line or line.startswith('#'):
+            continue
+        # Standard `sha256sum` format is: "<hex>␠␠<filename>" (filename may be
+        # prefixed by '*' for binary mode). Keep only the leading digest token.
+        token = line.split()[0].lstrip('*').lower()
+        if len(token) == 64 and all(c in '0123456789abcdef' for c in token):
+            hashes.add(token)
+
+    if not hashes:
+        logger.error("%s asset contained no valid SHA-256 digests", _SHA256SUMS_ASSET_NAME)
+        return None
+
+    return hashes
+
+
 def _validate_zip_members(zf):
     """
     Validate all zip member paths for Zip Slip and absolute path attacks.
@@ -245,6 +352,11 @@ def download_and_apply_update(download_url, app_dir, progress_callback=None):
     Validates zip contents, enforces download size limits, skips symlinks
     and unsafe file types.
 
+    Before anything is extracted or applied, the archive's SHA-256 is verified
+    against the release's SHA256SUMS asset. If that asset is missing or the
+    hash does not match, the update is refused (fail-safe) and the archive is
+    discarded — the installation is left untouched.
+
     Args:
         download_url: GitHub zipball URL
         app_dir: Application root directory
@@ -294,6 +406,42 @@ def download_and_apply_update(download_url, app_dir, progress_callback=None):
                 f.write(chunk)
                 if progress_callback is not None:
                     progress_callback(bytes_downloaded, total_bytes)
+
+        # --- Integrity verification (fail-safe, BEFORE extracting/applying) ---
+        # Compute the SHA-256 of the downloaded archive and require it to match
+        # a hash published in the release's SHA256SUMS asset. If the asset is
+        # absent or the hash does not match, we refuse to apply the update. The
+        # archive is removed by the `finally` block on the way out.
+        archive_digest = _compute_file_sha256(zip_path)
+        expected_hashes = _fetch_release_sha256sums(download_url)
+
+        if not expected_hashes:
+            logger.error(
+                "Integrity check failed: no trusted SHA256SUMS available for "
+                "this release. Refusing to apply the update."
+            )
+            raise RuntimeError(
+                "Update integrity check failed: this release does not publish a "
+                "SHA256SUMS checksum file, so the download could not be verified. "
+                "Refusing to apply the update for safety. Please update "
+                "AstroManager manually from the GitHub releases page."
+            )
+
+        if archive_digest not in expected_hashes:
+            logger.error(
+                "Integrity check failed: archive SHA-256 %s not listed in "
+                "SHA256SUMS. Possible tampering. Refusing to apply the update.",
+                archive_digest,
+            )
+            raise RuntimeError(
+                "Update integrity check failed: the downloaded archive checksum "
+                f"({archive_digest}) does not match the release's SHA256SUMS "
+                "(possible corruption or tampering). Refusing to apply the "
+                "update. Please update AstroManager manually from the GitHub "
+                "releases page."
+            )
+
+        logger.info("Archive integrity verified against SHA256SUMS")
 
         # Extract with Zip Slip protection
         extract_dir = os.path.join(tmp_dir, 'extracted')

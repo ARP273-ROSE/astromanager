@@ -140,24 +140,27 @@ def _setup_dependencies():
     checking = "Verification des dependances..." if lang == 'fr' else "Checking dependencies..."
 
     # Dependencies: (display_name, import_name, pip_name, required)
+    # pip_name carries explicit version bounds (lower from requirements.txt +
+    # a conservative upper cap) so a brand-new / compromised upstream release is
+    # never pulled automatically. Keep these in sync with requirements.txt. [SEC]
     deps = [
-        ("NumPy", "numpy", "numpy", True),
-        ("Astropy", "astropy", "astropy", True),
-        ("Matplotlib", "matplotlib", "matplotlib", True),
-        ("Pandas", "pandas", "pandas", True),
-        ("Pillow", "PIL", "Pillow", True),
-        ("PyQt6", "PyQt6", "PyQt6", True),
-        ("tqdm", "tqdm", "tqdm", True),
-        ("requests", "requests", "requests", True),
-        ("ReportLab", "reportlab", "reportlab", True),
-        ("xisf", "xisf", "xisf", True),
-        ("psutil", "psutil", "psutil", False),
-        ("scipy", "scipy", "scipy", False),
-        ("astroquery", "astroquery", "astroquery", False),
-        ("zstandard", "zstandard", "zstandard", False),
-        ("lz4", "lz4", "lz4", False),
-        ("defusedxml", "defusedxml", "defusedxml", False),
-        ("PyYAML", "yaml", "PyYAML", False),
+        ("NumPy", "numpy", "numpy>=1.20,<3", True),
+        ("Astropy", "astropy", "astropy>=5.0,<8", True),
+        ("Matplotlib", "matplotlib", "matplotlib>=3.5,<4", True),
+        ("Pandas", "pandas", "pandas>=1.3,<3", True),
+        ("Pillow", "PIL", "Pillow>=9.0,<12", True),
+        ("PyQt6", "PyQt6", "PyQt6>=6.2,<7", True),
+        ("tqdm", "tqdm", "tqdm>=4.60,<5", True),
+        ("requests", "requests", "requests>=2.25,<3", True),
+        ("ReportLab", "reportlab", "reportlab>=3.6,<5", True),
+        ("xisf", "xisf", "xisf>=0.9,<1", True),
+        ("psutil", "psutil", "psutil>=5.9,<8", False),
+        ("scipy", "scipy", "scipy>=1.7,<2", False),
+        ("astroquery", "astroquery", "astroquery>=0.4,<1", False),
+        ("zstandard", "zstandard", "zstandard>=0.18,<1", False),
+        ("lz4", "lz4", "lz4>=4.0,<5", False),
+        ("defusedxml", "defusedxml", "defusedxml>=0.7,<1", False),
+        ("PyYAML", "yaml", "PyYAML>=6.0,<7", False),
     ]
 
     # Cache find_spec results to avoid repeated filesystem lookups [PERF]
@@ -202,7 +205,10 @@ def _setup_dependencies():
     if failed_required:
         msg = "Dependances manquantes" if lang == 'fr' else "Missing dependencies"
         print(f"\n  {msg}: {', '.join(failed_required)}")
-        print(f"  pip install {' '.join(n.lower() for n in failed_required)}")
+        hint = ("Installez-les avec (versions epinglees) :" if lang == 'fr'
+                else "Install them with (pinned versions):")
+        print(f"  {hint}")
+        print(f"  pip install -r requirements.txt")
     else:
         msg = "Toutes les dependances sont installees !" if lang == 'fr' else "All dependencies installed!"
         print(f"\n  {msg}")

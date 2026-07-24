@@ -922,53 +922,73 @@ class AstroManagerWindow(QMainWindow):
                              "Aucun fichier FITS trouvé dans ce dossier."))
                 return
 
-            scanned = 0
-            seen_targets = set()  # skip files from already-scanned targets
-
+            # Perf (finding #17): sample ONE file per sub-directory BEFORE
+            # opening anything. Astro trees are organised as
+            # "YYYY-MM-DD Target/Night_N/{Light,Flats,...}"; the mount location
+            # is identical for every frame in a directory, so opening all 200+
+            # files of a target is wasted I/O (the previous 'skip by OBJECT'
+            # test ran only AFTER the file was already opened). We also cap the
+            # number of headers read and use fits.getheader() (primary header
+            # only, no data, no memmap handle) instead of fits.open().
+            # NOTE: this closure runs on the GUI thread; moving it to a QThread
+            # is non-trivial here (it drives dialog widgets / QMessageBox
+            # directly). The sampling + cap below keep it responsive; deferring
+            # to a worker is left as a future improvement.
+            by_dir = {}
             for fp in fits_files:
+                d = os.path.dirname(fp)
+                if d not in by_dir:
+                    by_dir[d] = fp
+            sample_files = list(by_dir.values())
+
+            MAX_SAMPLE = 300  # cap headers read on very large trees
+            if len(sample_files) > MAX_SAMPLE:
+                sample_files = sample_files[:MAX_SAMPLE]
+
+            from astropy.io import fits as pyfits
+
+            scanned = 0
+            seen_targets = set()  # track distinct targets seen (for reporting)
+
+            for fp in sample_files:
                 try:
-                    from astropy.io import fits as pyfits
-                    with pyfits.open(fp, memmap=True) as hdul:
-                        hdr = hdul[0].header
+                    hdr = pyfits.getheader(fp)
 
-                        # Skip if we already scanned a file for this target
-                        obj = str(hdr.get('OBJECT', '')).strip().upper()
-                        if obj and obj in seen_targets:
-                            continue
+                    obj = str(hdr.get('OBJECT', '')).strip().upper()
+                    if obj:
+                        seen_targets.add(obj)
+
+                    lat = lon = elev = None
+                    for lat_key in ('SITELAT', 'OBSLAT', 'LAT-OBS', 'OBSGEO-B'):
+                        if lat_key in hdr and hdr[lat_key] is not None:
+                            try:
+                                lat = float(hdr[lat_key])
+                                break
+                            except (ValueError, TypeError):
+                                pass
+                    for lon_key in ('SITELONG', 'OBSLONG', 'LONG-OBS', 'OBSGEO-L'):
+                        if lon_key in hdr and hdr[lon_key] is not None:
+                            try:
+                                lon = float(hdr[lon_key])
+                                break
+                            except (ValueError, TypeError):
+                                pass
+                    for elev_key in ('SITEELEV', 'OBSELEV', 'ALT-OBS', 'OBSGEO-H'):
+                        if elev_key in hdr and hdr[elev_key] is not None:
+                            try:
+                                elev = float(hdr[elev_key])
+                                break
+                            except (ValueError, TypeError):
+                                pass
+                    if lat is not None and lon is not None:
+                        key = (round(lat, 4), round(lon, 4))
+                        if key not in locations:
+                            locations[key] = {'lat': key[0], 'lon': key[1],
+                                              'elev': round(elev, 0) if elev else None,
+                                              'targets': []}
                         if obj:
-                            seen_targets.add(obj)
-
-                        lat = lon = elev = None
-                        for lat_key in ('SITELAT', 'OBSLAT', 'LAT-OBS', 'OBSGEO-B'):
-                            if lat_key in hdr and hdr[lat_key] is not None:
-                                try:
-                                    lat = float(hdr[lat_key])
-                                    break
-                                except (ValueError, TypeError):
-                                    pass
-                        for lon_key in ('SITELONG', 'OBSLONG', 'LONG-OBS', 'OBSGEO-L'):
-                            if lon_key in hdr and hdr[lon_key] is not None:
-                                try:
-                                    lon = float(hdr[lon_key])
-                                    break
-                                except (ValueError, TypeError):
-                                    pass
-                        for elev_key in ('SITEELEV', 'OBSELEV', 'ALT-OBS', 'OBSGEO-H'):
-                            if elev_key in hdr and hdr[elev_key] is not None:
-                                try:
-                                    elev = float(hdr[elev_key])
-                                    break
-                                except (ValueError, TypeError):
-                                    pass
-                        if lat is not None and lon is not None:
-                            key = (round(lat, 4), round(lon, 4))
-                            if key not in locations:
-                                locations[key] = {'lat': key[0], 'lon': key[1],
-                                                  'elev': round(elev, 0) if elev else None,
-                                                  'targets': []}
-                            if obj:
-                                locations[key]['targets'].append(obj)
-                        scanned += 1
+                            locations[key]['targets'].append(obj)
+                    scanned += 1
                 except Exception:
                     continue
 
