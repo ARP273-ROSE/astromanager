@@ -158,7 +158,7 @@ def _read_image_data(filepath: str) -> Tuple[np.ndarray, dict]:
     Read image data and header from FITS, XISF, or FITS.FZ file.
 
     Returns:
-        (data_2d, header_dict) — data is always 2D float64.
+        (data_2d, header_dict) — data is always 2D float32.
         For color images, luminance is computed as weighted average of channels.
 
     Raises:
@@ -210,8 +210,9 @@ def _read_image_data(filepath: str) -> Tuple[np.ndarray, dict]:
     if data is None:
         raise ValueError(f"No image data found in {os.path.basename(filepath)}")
 
-    # Convert to float64 for analysis
-    data = np.asarray(data, dtype=np.float64)
+    # Convert to float32 for analysis — precision is sufficient for
+    # background/noise/FWHM estimation and halves peak RAM vs float64.
+    data = np.asarray(data, dtype=np.float32)
 
     # Handle 3D arrays (color images) — compute luminance
     if data.ndim == 3:
@@ -326,8 +327,10 @@ def estimate_background(data: np.ndarray, mesh_size: int = DEFAULT_MESH_SIZE,
             x1 = (ix + 1) * w // nx
             cell = data[y0:y1, x0:x1].ravel()
 
-            # Sigma-clipped median for background, MAD for noise
-            clipped = cell.copy()
+            # Sigma-clipped median for background, MAD for noise.
+            # `cell` is already a fresh array (ravel of a non-contiguous slice)
+            # and is only rebound below (never mutated in place), so no copy.
+            clipped = cell
             for _ in range(sigma_clip_iters):
                 if len(clipped) < 5:
                     break
@@ -1069,6 +1072,7 @@ def analyze_batch(filepaths: List[str],
                   thresholds: Optional[Dict[str, Tuple[float, float]]] = None,
                   fwhm_reject_factor: float = DEFAULT_REJECT_FWHM_FACTOR,
                   score_threshold: float = DEFAULT_REJECT_SCORE,
+                  should_stop: Optional[Callable[[], bool]] = None,
                   ) -> List[FrameQualityResult]:
     """
     Analyze a batch of frames in parallel using ProcessPoolExecutor.
@@ -1085,9 +1089,15 @@ def analyze_batch(filepaths: List[str],
         thresholds: Quality score thresholds override.
         fwhm_reject_factor: Reject if FWHM > factor * batch median.
         score_threshold: Reject if quality_score < threshold.
+        should_stop: Optional zero-arg predicate polled during the run; when it
+            returns True, no further frames are started, in-flight frames are
+            cancelled where possible, and the (partial) results gathered so far
+            are returned in input order.
 
     Returns:
-        List of FrameQualityResult, one per input file, in input order.
+        List of FrameQualityResult, one per analyzed file, in input order.
+        On cancellation, only the frames completed before the stop request
+        are included.
     """
     if not filepaths:
         return []
@@ -1111,12 +1121,16 @@ def analyze_batch(filepaths: List[str],
 
     # Use single-process for small batches or debugging
     if total <= 2 or max_workers <= 1:
-        for i, fp in enumerate(filepaths):
+        completed = 0
+        for fp in filepaths:
+            if should_stop is not None and should_stop():
+                break
             result = analyze_frame(fp, **kwargs)
             results[fp] = result
+            completed += 1
             if callback:
                 try:
-                    callback(i + 1, total, result)
+                    callback(completed, total, result)
                 except Exception:
                     pass
     else:
@@ -1156,8 +1170,15 @@ def analyze_batch(filepaths: List[str],
                     except Exception:
                         pass
 
-    # Preserve input order
-    ordered_results = [results[fp] for fp in filepaths]
+                # Cooperative cancellation: stop starting new frames and
+                # cancel any that have not begun executing yet.
+                if should_stop is not None and should_stop():
+                    for f in future_to_path:
+                        f.cancel()
+                    break
+
+    # Preserve input order (partial when cancelled)
+    ordered_results = [results[fp] for fp in filepaths if fp in results]
 
     # Apply batch-level rejection (FWHM relative to median)
     check_batch_rejection(

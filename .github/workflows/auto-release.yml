@@ -62,3 +62,27 @@ jobs:
           tag_name: "v${{ steps.version.outputs.new }}"
           name: "v${{ steps.version.outputs.new }}"
           generate_release_notes: true
+
+      # The in-app auto-updater downloads the release source zipball and REFUSES
+      # to apply it unless its SHA-256 matches a value published in this
+      # SHA256SUMS release asset (integrity/anti-tamper). We therefore hash the
+      # exact same zipball GitHub serves for this tag and upload the digest.
+      # NOTE: GitHub does not formally guarantee that on-the-fly source zipballs
+      # are byte-stable over time; if a future download differs, the updater
+      # fails safe (refuses, user updates manually). For a fully deterministic
+      # guarantee, switch to hashing a self-built archive uploaded as an asset
+      # and point the updater at that asset instead of the zipball.
+      - name: Publish SHA256SUMS for verified auto-update
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="v${{ steps.version.outputs.new }}"
+          ZIP_URL="https://api.github.com/repos/${{ github.repository }}/zipball/${TAG}"
+          curl -fsSL --retry 5 --retry-delay 3 \
+               -H "Authorization: Bearer $GH_TOKEN" \
+               -H "Accept: application/vnd.github+json" \
+               -o source.zip "$ZIP_URL"
+          HASH=$(sha256sum source.zip | cut -d' ' -f1)
+          printf '%s  astromanager-%s.zip\n' "$HASH" "$TAG" > SHA256SUMS
+          gh release upload "$TAG" SHA256SUMS --clobber --repo "${{ github.repository }}"

@@ -624,7 +624,9 @@ class UnifiedWorker(QThread):
                 self.progress_signal.emit(0, 1, "Plate solving...")
                 try:
                     import tempfile
-                    from modules.plate_solving import PlateSolver
+                    from modules.plate_solving import (
+                        PlateSolver, is_file_solved, wcs_info_from_header, _read_header
+                    )
                     from core.config import get_config
                     _ps_config = get_config()
                     _ps_timeout = _ps_config.get('plate_solving.timeout_sec', 5)
@@ -681,54 +683,68 @@ class UnifiedWorker(QThread):
 
                                 analyze_info = file_info.get('info', {})
                                 nested_info = analyze_info.get('info', {}) if isinstance(analyze_info, dict) else {}
-
-                                # XISF -> temp FITS for ASTAP
-                                solve_path = fp
-                                if fp.lower().endswith(('.xisf', '.xifs', '.xif')):
-                                    if attempt == 0:
-                                        print(f"  📦 {target}: Converting XISF to temporary FITS...")
-                                    try:
-                                        from modules.compression import xisf_to_fits
-                                        tmp_dir = tempfile.mkdtemp(prefix='astro_ps_')
-                                        tmp_fits = os.path.join(tmp_dir, os.path.splitext(os.path.basename(fp))[0] + '.fits')
-                                        conv_result = xisf_to_fits(fp, tmp_fits)
-                                        if conv_result.get('status') == 'success':
-                                            solve_path = tmp_fits
-                                            temp_files.append(tmp_dir)
-                                        else:
-                                            continue
-                                    except Exception:
-                                        continue
-
-                                # RA/DEC hints
-                                ra_hint = dec_hint = None
-                                try:
-                                    ra_val = analyze_info.get('ra')
-                                    dec_val = analyze_info.get('dec')
-                                    if ra_val is not None and dec_val is not None:
-                                        ra_hint = float(ra_val)
-                                        dec_hint = float(dec_val)
-                                except (ValueError, TypeError):
-                                    pass
-
-                                # FOV hint
-                                fov_hint = None
                                 instrument = nested_info.get('instrument', '')
                                 focal_mm_val = nested_info.get('focal_length_mm')
-                                try:
-                                    if focal_mm_val and float(focal_mm_val) > 0:
-                                        focal_mm_f = float(focal_mm_val)
-                                        if instrument:
-                                            from database.cameras import get_pixel_size, get_sensor_dimensions
-                                            pixel_um = get_pixel_size(instrument)
-                                            dims = get_sensor_dimensions(instrument)
-                                            if pixel_um and dims:
-                                                max_dim = max(dims[0], dims[1])
-                                                fov_hint = (pixel_um * max_dim / focal_mm_f) * 206.265 / 3600.0
-                                except (ValueError, TypeError):
-                                    pass
 
-                                result_ps = ps.solve_field(solve_path, ra_hint=ra_hint, dec_hint=dec_hint, fov_hint=fov_hint)
+                                # If the file is already plate-solved, reuse its WCS
+                                # from the header instead of re-solving it.
+                                result_ps = None
+                                try:
+                                    if is_file_solved(fp):
+                                        _hdr = _read_header(fp)
+                                        _wcs = wcs_info_from_header(_hdr) if _hdr else None
+                                        if _wcs and _wcs.get('solved'):
+                                            result_ps = _wcs
+                                            print(f"  ♻️  {target}: already plate-solved, reading WCS from header (no re-solve)")
+                                except Exception:
+                                    result_ps = None
+
+                                if result_ps is None:
+                                    # XISF -> temp FITS for ASTAP
+                                    solve_path = fp
+                                    if fp.lower().endswith(('.xisf', '.xifs', '.xif')):
+                                        if attempt == 0:
+                                            print(f"  📦 {target}: Converting XISF to temporary FITS...")
+                                        try:
+                                            from modules.compression import xisf_to_fits
+                                            tmp_dir = tempfile.mkdtemp(prefix='astro_ps_')
+                                            tmp_fits = os.path.join(tmp_dir, os.path.splitext(os.path.basename(fp))[0] + '.fits')
+                                            conv_result = xisf_to_fits(fp, tmp_fits)
+                                            if conv_result.get('status') == 'success':
+                                                solve_path = tmp_fits
+                                                temp_files.append(tmp_dir)
+                                            else:
+                                                continue
+                                        except Exception:
+                                            continue
+
+                                    # RA/DEC hints
+                                    ra_hint = dec_hint = None
+                                    try:
+                                        ra_val = analyze_info.get('ra')
+                                        dec_val = analyze_info.get('dec')
+                                        if ra_val is not None and dec_val is not None:
+                                            ra_hint = float(ra_val)
+                                            dec_hint = float(dec_val)
+                                    except (ValueError, TypeError):
+                                        pass
+
+                                    # FOV hint
+                                    fov_hint = None
+                                    try:
+                                        if focal_mm_val and float(focal_mm_val) > 0:
+                                            focal_mm_f = float(focal_mm_val)
+                                            if instrument:
+                                                from database.cameras import get_pixel_size, get_sensor_dimensions
+                                                pixel_um = get_pixel_size(instrument)
+                                                dims = get_sensor_dimensions(instrument)
+                                                if pixel_um and dims:
+                                                    max_dim = max(dims[0], dims[1])
+                                                    fov_hint = (pixel_um * max_dim / focal_mm_f) * 206.265 / 3600.0
+                                    except (ValueError, TypeError):
+                                        pass
+
+                                    result_ps = ps.solve_field(solve_path, ra_hint=ra_hint, dec_hint=dec_hint, fov_hint=fov_hint)
                                 if result_ps.get('solved'):
                                     solved_count += 1
                                     target_solved = True
@@ -1106,7 +1122,13 @@ class UnifiedWorker(QThread):
         workers = params.get('workers', 0)
         if workers <= 0:
             cpu_count = multiprocessing.cpu_count()
-            workers = max(2, min(cpu_count - 1, 8))
+            # Use config system which factors in storage type (HDD //2, NAS //3)
+            try:
+                from core.config import get_config
+                cfg_workers = get_config().get_workers()
+            except Exception:
+                cfg_workers = 8
+            workers = max(2, min(cpu_count - 1, cfg_workers))
 
         fmt_label = {'xisf': 'XISF', 'fz': 'FITS.FZ', 'fits': 'FITS'}
         print(_tr(f"🗜️ Converting {total} files → {fmt_label.get(output_format, output_format)} "
@@ -1697,7 +1719,13 @@ class UnifiedWorker(QThread):
         print(_tr(f"\n🗜️ Phase 2: Compressing {total} files → XISF ({profile})...",
                    f"\n🗜️ Phase 2 : Compression de {total} fichiers → XISF ({profile})..."))
 
-        workers = max(2, min(multiprocessing.cpu_count() - 1, 8))
+        # Use config system which factors in storage type (HDD //2, NAS //3)
+        try:
+            from core.config import get_config
+            cfg_workers = get_config().get_workers()
+        except Exception:
+            cfg_workers = 8
+        workers = max(2, min(multiprocessing.cpu_count() - 1, cfg_workers))
 
         tasks = []
         for fp in fits_files:

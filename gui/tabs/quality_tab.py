@@ -118,42 +118,38 @@ class _AnalysisWorker(QThread):
         self._stop_requested = True
 
     def run(self):
-        """Execute frame-by-frame analysis in this thread."""
+        """Execute batch frame analysis in parallel (ProcessPoolExecutor)."""
         try:
-            from modules.quality_analysis import analyze_frame
+            from modules.quality_analysis import analyze_batch
         except ImportError as e:
             self.error.emit(f"Import error: {e}")
             return
 
-        results = []
-        total = len(self.filepaths)
+        # Resolve worker count from config when available, else let
+        # analyze_batch pick its own default (max_workers=None).
+        try:
+            max_workers = get_config().get_workers()
+        except Exception:
+            max_workers = None
 
-        for i, fp in enumerate(self.filepaths):
-            if self._stop_requested:
-                break
-
-            filename = os.path.basename(fp)
-            self.progress.emit(i + 1, total, filename)
-
-            try:
-                result = analyze_frame(fp, max_stars=self.max_stars)
-            except Exception as e:
-                # Build a minimal error result
-                from modules.quality_analysis import FrameQualityResult
-                result = FrameQualityResult(
-                    filepath=fp, star_count=0,
-                    fwhm_median=0.0, fwhm_std=0.0, hfr_median=0.0,
-                    eccentricity_median=0.0, snr_median=0.0,
-                    background_level=0.0, background_noise=0.0,
-                    trailing_detected=False, quality_score=0.0,
-                    rejection_flag=True,
-                    rejection_reasons=[f"Exception: {e}"],
-                    stars=[], plate_scale=0.0, analysis_time_ms=0.0,
-                    error=str(e),
-                )
-
-            results.append(result)
+        # Callback runs in this worker thread once per completed frame.
+        # Re-emit the exact same signals (same names/payloads) the UI expects:
+        # progress(current, total, filename) then frame_result(result).
+        def _cb(current, total, result):
+            self.progress.emit(current, total, os.path.basename(result.filepath))
             self.frame_result.emit(result)
+
+        try:
+            results = analyze_batch(
+                self.filepaths,
+                max_workers=max_workers,
+                callback=_cb,
+                max_stars=self.max_stars,
+                should_stop=lambda: self._stop_requested,
+            )
+        except Exception as e:
+            self.error.emit(f"Analysis error: {e}")
+            return
 
         self.finished.emit(results)
 
