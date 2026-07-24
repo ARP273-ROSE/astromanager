@@ -23,6 +23,9 @@ env/
 .claude/
 CLAUDE.md
 
+# Local security/perf audit reports (kept out of the public repo)
+AUDIT_SECU_PERF_*.md
+
 # LaTeX source (only compiled PDFs are committed)
 *.tex
 
