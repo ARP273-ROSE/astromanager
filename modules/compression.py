@@ -404,7 +404,12 @@ class XISFWriter:
             f.write(b'\x00\x00\x00\x00')
             f.write(xml_bytes)
             if padding > 0:
-                f.write(b'\x00' * padding)
+                # Fix 2026-07-24 : padding en ESPACES, pas en NUL. Le champ longueur
+                # inclut le padding -> un lecteur qui parse toute la longueur voyait
+                # "</xisf>\x00\x00..." = token XML invalide (ParseError ligne 90) et
+                # rejetait le fichier (nina_sort "bad-header", pas de DATE-OBS). Le
+                # whitespace apres </xisf> est du XML bien forme pour TOUS les parseurs.
+                f.write(b' ' * padding)
             f.write(compressed)
 
         del compressed
