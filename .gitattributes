@@ -1,2 +1,10 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# --- Fins de ligne des scripts (ajout : lanceurs bureau Linux) ---
+# Les scripts shell doivent rester en LF meme apres un checkout Windows :
+# bash echoue sur du CRLF (« $'\r': commande introuvable »).
+*.sh  text eol=lf
+# Les .bat/.cmd gardent des fins de ligne Windows pour cmd.exe.
+*.bat text eol=crlf
+*.cmd text eol=crlf
