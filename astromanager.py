@@ -543,6 +543,69 @@ def run_cli(args):
         return 1
 
 
+def _demarrer_rapports():
+    """Met en place la remontee d'incidents, le plus tot possible.
+
+    Une application installee chez quelqu'un d'autre ne laisse aucune trace
+    exploitable quand elle plante : ni l'utilisateur ni son auteur ne savent
+    ce qui s'est passe. Trois filets sont poses ici :
+
+      - faulthandler, pour les morts brutales cote Qt/C, qui ne passent pas
+        par sys.excepthook et ne laissent sinon aucun message ;
+      - le releve de la trace laissee par un crash precedent ;
+      - la reprise des rapports qu'un envoi rate avait mis en attente — cas
+        courant, un plantage laissant rarement le temps d'une requete reseau.
+
+    Aucune de ces etapes ne doit pouvoir empecher l'application de demarrer :
+    tout est sous garde.
+    """
+    try:
+        from core.config import _user_data_dir
+        dossier = _user_data_dir()
+    except Exception:
+        dossier = Path.home() / '.astromanager'
+    try:
+        dossier.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        return None
+
+    trace_native = dossier / '_crash_natif.log'
+    try:
+        import faulthandler
+        global _fichier_faulthandler
+        _fichier_faulthandler = open(trace_native, 'w', encoding='utf-8')
+        faulthandler.enable(file=_fichier_faulthandler, all_threads=True)
+    except Exception:
+        pass
+
+    try:
+        import reporting
+        reporting.init(dossier, application='astromanager', version=__version__)
+        reporting.relever_crash_natif(trace_native)
+        reporting.reprendre_file_en_fond()
+        return reporting
+    except Exception:
+        return None
+
+
+def _poser_filet_plantage(rapports):
+    """Fait remonter toute exception Python non rattrapee."""
+    if rapports is None:
+        return
+    precedent = sys.excepthook
+
+    def filet(type_exc, valeur, trace):
+        import traceback as _tb
+        texte = ''.join(_tb.format_exception(type_exc, valeur, trace))
+        try:
+            rapports.signaler_plantage(texte)
+        except Exception:
+            pass
+        precedent(type_exc, valeur, trace)
+
+    sys.excepthook = filet
+
+
 def main():
     """Main entry point"""
     parser = argparse.ArgumentParser(
@@ -609,6 +672,10 @@ For more information, visit: https://github.com/ARP273-ROSE/astromanager
                             help='With --optimize-storage: only extract duplicates, skip compression')
 
     args = parser.parse_args()
+
+    # Remontee d'incidents : posee avant toute autre chose, pour couvrir aussi
+    # ce qui casse pendant l'initialisation.
+    _poser_filet_plantage(_demarrer_rapports())
 
     if args.debug:
         logging.getLogger().setLevel(logging.DEBUG)

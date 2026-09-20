@@ -1,0 +1,40 @@
+{
+  "nom_technique": "astromanager",
+  "nom_fichier": "AstroManager",
+  "nom_affiche": "AstroManager",
+  "depot_distribution": "ARP273-ROSE/astromanager",
+  "point_entree": "astromanager.py",
+  "fichier_version": "VERSION",
+  "icone": "assets\\icon.ico",
+  "appid": "{{E79AEB94-709B-58AA-B06B-A161A391B89E}",
+  "modules": [
+    "astromanager.py",
+    "fits_analyser_gui.py",
+    "shortcut_helper.py",
+    "reporting.py",
+    "updater.py"
+  ],
+  "paquets": [
+    "core",
+    "gui",
+    "modules",
+    "parsers",
+    "analyzers",
+    "database",
+    "config",
+    "assets"
+  ],
+  "assets": [
+    "VERSION",
+    "README.md",
+    "LICENSE",
+    "USER_MANUAL_FR.pdf",
+    "USER_MANUAL_EN.pdf"
+  ],
+  "requirements": "requirements.txt",
+  "pip": [],
+  "binaires": [],
+  "fichiers_proteges": [
+    "config.yaml"
+  ]
+}

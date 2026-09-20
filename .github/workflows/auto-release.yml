@@ -25,7 +25,11 @@ jobs:
       - name: Read current version
         id: version
         run: |
-          CURRENT=$(grep -oP "(?<=__version__ = ')[^']+" core/__init__.py)
+          # La version vit dans le fichier VERSION, seule source de verite :
+          # core/__init__.py la lit desormais au lieu de la redire. Deux
+          # endroits finissaient par diverger, et une application qui se croit
+          # en retard sur elle-meme propose une mise a jour sans fin.
+          CURRENT=$(tr -d ' \r\n' < VERSION)
 
           if [[ ! "$CURRENT" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "::error::Invalid version format: '$CURRENT'. Expected semver (e.g. 1.2.3)."
@@ -39,15 +43,15 @@ jobs:
           NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
           echo "new=$NEW_VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Bump version in core/__init__.py
+      - name: Bump version
         run: |
-          sed -i "s/__version__ = '.*'/__version__ = '${{ steps.version.outputs.new }}'/" core/__init__.py
+          echo "${{ steps.version.outputs.new }}" > VERSION
 
       - name: Commit version bump
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add core/__init__.py
+          git add VERSION
           git commit -m "Bump version to ${{ steps.version.outputs.new }} [skip ci]"
           git push
 
