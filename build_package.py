@@ -64,6 +64,7 @@ APP_PAQUETS = KIT.get('paquets', [])       # dossiers entiers (core/, gui/...)
 APP_ASSETS = KIT.get('assets', [])         # icones, VERSION, donnees...
 PIP_PAQUETS = KIT.get('pip', [])           # a defaut de requirements.txt
 BINAIRES = KIT.get('binaires', [])         # [{'url':..., 'fichiers':[...]}]
+COPIES = KIT.get('copies', [])             # dossiers copies par motifs
 
 # Modules Qt inutilises : l'application n'importe que QtCore, QtGui,
 # QtWidgets et QtMultimedia. Tout le reste est du poids mort.
@@ -191,6 +192,23 @@ def step_app():
         shutil.copytree(src, app / nom, dirs_exist_ok=True,
                         ignore=shutil.ignore_patterns('__pycache__', '*.pyc',
                                                       '.git', 'tests'))
+
+    # Copies selectives : un dossier de donnees contient souvent bien plus que
+    # ce qu'il faut livrer. Celui des sons de ce projet pese plusieurs
+    # gigaoctets, dont seule une poignee de fichiers sert a l'application.
+    for regle in COPIES:
+        source = ROOT / regle['de']
+        cible = app / regle.get('vers', regle['de'])
+        retenus = 0
+        for motif in regle.get('motifs', ['**/*']):
+            for fichier in source.glob(motif):
+                if not fichier.is_file():
+                    continue
+                destination = cible / fichier.relative_to(source)
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(fichier, destination)
+                retenus += 1
+        log(f"{regle['de']} : {retenus} fichier(s) retenu(s)")
 
     # La fiche d'identite voyage avec l'application : reporting.py et
     # updater.py la relisent pour savoir qui ils sont et d'ou viennent les
