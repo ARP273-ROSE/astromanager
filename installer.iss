@@ -128,11 +128,13 @@ begin
   begin
     DataDir := ExpandConstant('{localappdata}\{#AppName}');
     if DirExists(DataDir) then
-      MsgBox('{#AppDisplayName} a été désinstallée.' + #13#10 + #13#10 +
-             'Votre bibliothèque, vos listes de lecture et vos podcasts ont ' +
-             'été conservés dans :' + #13#10 + DataDir + #13#10 + #13#10 +
-             'Si vous réinstallez cette application, vous les retrouverez tels quels. ' +
-             'Pour tout effacer, supprimez ce dossier à la main.',
+      // Le nom de l'application n'apparait pas dans ce message, et c'est
+      // volontaire : une apostrophe dans le nom (« Machine d'Anticythere »)
+      // terminerait la chaine Pascal et le script ne compilerait plus.
+      MsgBox('La desinstallation est terminee.' + #13#10 + #13#10 +
+             'Vos donnees ont ete conservees dans :' + #13#10 + DataDir + #13#10 + #13#10 +
+             'Si vous reinstallez cette application, vous les retrouverez ' +
+             'telles quelles. Pour tout effacer, supprimez ce dossier a la main.',
              mbInformation, MB_OK);
   end;
 end;
