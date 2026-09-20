@@ -102,6 +102,12 @@ jobs:
           app = QApplication(sys.argv)
           import reporting, updater
           kit = json.loads(pathlib.Path(r'$PKG/app/kit.json').read_text(encoding='utf-8'))
+          # Modules que l'application doit pouvoir importer : c'est le seul
+          # moyen de repérer ici une dependance oubliee dans le paquet, qui
+          # ne se verrait sinon qu'au premier lancement chez l'utilisateur.
+          for module in kit.get('verification_import', []):
+              __import__(module)
+              print('  import OK :', module)
           attendue = '${{ steps.version.outputs.value }}'
           vue = pathlib.Path(r'$PKG/app/' + kit['fichier_version']).read_text(encoding='utf-8').strip()
           if vue != attendue:
