@@ -36,5 +36,14 @@
   "binaires": [],
   "fichiers_proteges": [
     "config.yaml"
+  ],
+  "verification_import": [
+    "core",
+    "core.config",
+    "core.database",
+    "gui.main_window",
+    "modules.compression",
+    "parsers",
+    "analyzers"
   ]
 }
