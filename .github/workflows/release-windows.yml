@@ -23,6 +23,12 @@ on:
         description: "Version a construire (sans le v)"
         required: true
         type: string
+      ref:
+        description: "Commit ou tag a construire. Indispensable quand la CI
+          appelante vient de pousser un commit de version : sans lui, le job
+          reprend le commit declencheur, plus ancien d'une version."
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -34,6 +40,8 @@ jobs:
     steps:
       - name: Recuperer le depot
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
 
       - name: Lire kit.json
         id: kit

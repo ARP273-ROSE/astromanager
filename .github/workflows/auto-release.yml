@@ -101,6 +101,7 @@ jobs:
     uses: ./.github/workflows/release-windows.yml
     with:
       version: ${{ needs.release.outputs.version }}
+      ref: v${{ needs.release.outputs.version }}
     permissions:
       contents: write
 
