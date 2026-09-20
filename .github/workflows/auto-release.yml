@@ -10,6 +10,8 @@ on:
 
 jobs:
   release:
+    outputs:
+      version: ${{ steps.version.outputs.new }}
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     permissions:
@@ -90,3 +92,15 @@ jobs:
           HASH=$(sha256sum source.zip | cut -d' ' -f1)
           printf '%s  astromanager-%s.zip\n' "$HASH" "$TAG" > SHA256SUMS
           gh release upload "$TAG" SHA256SUMS --clobber --repo "${{ github.repository }}"
+
+  # Le paquet Windows ne peut pas etre declenche par le tag ci-dessus : GitHub
+  # ignore les evenements produits par le jeton d'un workflow. On appelle donc
+  # le workflow directement.
+  windows:
+    needs: release
+    uses: ./.github/workflows/release-windows.yml
+    with:
+      version: ${{ needs.release.outputs.version }}
+    permissions:
+      contents: write
+

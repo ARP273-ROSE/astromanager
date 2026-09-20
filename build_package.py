@@ -143,6 +143,15 @@ def step_python():
     log('installation de pip')
     subprocess.run([str(exe), str(get_pip), '--no-warn-script-location', '-q'],
                    check=True)
+
+    # setuptools et wheel ne sont pas fournis par la distribution embeddable,
+    # et get-pip n'installe que pip. Des qu'une dependance n'a pas de roue
+    # precompilee pour cette version de Python, pip tente de la construire
+    # depuis les sources et echoue sur « Cannot import setuptools.build_meta ».
+    log('installation de setuptools et wheel')
+    subprocess.run([str(exe), '-m', 'pip', 'install', '-q',
+                    '--no-warn-script-location', 'setuptools', 'wheel'],
+                   check=True)
     return exe
 
 

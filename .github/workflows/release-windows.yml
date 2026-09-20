@@ -13,6 +13,16 @@ on:
       version:
         description: "Version a construire (sans le v), ex. 1.2.3"
         required: true
+  # Appelable depuis un autre workflow du depot. C'est indispensable quand une
+  # CI cree elle-meme le tag : GitHub ne declenche aucun workflow sur un
+  # evenement produit par le jeton d'un workflow (protection anti-boucle), si
+  # bien que le tag arrivait sans que rien ne construise le paquet.
+  workflow_call:
+    inputs:
+      version:
+        description: "Version a construire (sans le v)"
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -42,8 +52,8 @@ jobs:
         id: version
         shell: bash
         run: |
-          if [ -n "${{ github.event.inputs.version }}" ]; then
-            V="${{ github.event.inputs.version }}"
+          if [ -n "${{ inputs.version }}" ]; then
+            V="${{ inputs.version }}"
           else
             V="${GITHUB_REF_NAME#v}"
           fi
