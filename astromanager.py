@@ -87,12 +87,14 @@ def _check_and_install(package_name, import_name=None, pip_name=None):
     try:
         result = subprocess.run(
             [sys.executable, "-m", "pip", "install", "--user", "--quiet", pip_name],
-            capture_output=True, text=True, timeout=180
+            capture_output=True, text=True, timeout=180,
+            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0)
         )
         if result.returncode != 0:
             result = subprocess.run(
                 [sys.executable, "-m", "pip", "install", "--quiet", pip_name],
-                capture_output=True, text=True, timeout=180
+                capture_output=True, text=True, timeout=180,
+                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0)
             )
 
         if result.returncode == 0:
