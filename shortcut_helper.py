@@ -82,13 +82,14 @@ def _read_windows_shortcut(shortcut_path: Path) -> dict:
     try:
         ps = (
             f'$s = (New-Object -ComObject WScript.Shell)'
-            f'.CreateShortcut("{shortcut_path}");'
+            f'.CreateShortcut("{str(shortcut_path).replace(chr(34), "`" + chr(34))}");'
             f'Write-Output $s.TargetPath;'
             f'Write-Output $s.WorkingDirectory'
         )
         r = subprocess.run(
             ["powershell.exe", "-NoProfile", "-Command", ps],
-            capture_output=True, text=True, timeout=10
+            capture_output=True, text=True, timeout=10,
+            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0)
         )
         lines = r.stdout.strip().splitlines()
         if len(lines) >= 2:
@@ -183,7 +184,8 @@ def _create_windows_shortcut(app_name: str, main_script: str, icon_file: str,
     try:
         result = subprocess.run(
             ["powershell.exe", "-NoProfile", "-Command", ps_script],
-            capture_output=True, timeout=10
+            capture_output=True, timeout=10,
+            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0)
         )
         if result.returncode == 0:
             logger.info("Shortcut created: %s -> %s", shortcut_path, launch_bat)
