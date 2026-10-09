@@ -26,7 +26,7 @@ Usage:
     python astromanager.py              # Launch GUI
     python astromanager.py --help       # Show help
 
-Author: Claude Code (Anthropic)
+Author: ARP273-ROSE
 Version: 1.0.0
 License: MIT
 ================================================================================

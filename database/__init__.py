@@ -19,6 +19,12 @@ from .telescopes import (
     calculate_fov, detect_focal_reducer, list_telescopes_by_brand,
 )
 
+from .observatories import (
+    OBSERVATORY_TELESCOPES, OBSERVATORY_CAMERAS,
+    detect_observatory_equipment, detect_observatory_telescope,
+    detect_observatory_camera,
+)
+
 from .filters import (
     FILTERS_DATABASE, FILTER_ALIASES,
     normalize_filter_name, lookup_filter, get_filter_type,

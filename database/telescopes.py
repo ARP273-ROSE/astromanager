@@ -10661,6 +10661,12 @@ TELESCOPE_HEADER_MAPPING = {
     'ISTAR RC8': 'iStar RC8',
 }
 
+# Observatory instruments (OHP T120, IRIS): see database/observatories.py.
+# Generic strings ('ACP->NTM') are resolved there from the whole header.
+from .observatories import OBSERVATORY_TELESCOPES, OBSERVATORY_TELESCOPE_HEADER_MAPPING  # noqa: E402
+TELESCOPES_DATABASE.update(OBSERVATORY_TELESCOPES)
+TELESCOPE_HEADER_MAPPING.update(OBSERVATORY_TELESCOPE_HEADER_MAPPING)
+
 
 
 

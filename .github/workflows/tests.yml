@@ -1,0 +1,22 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - name: Outils
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq poppler-utils
+          pip install pytest numpy astropy xisf PyYAML defusedxml
+      - name: Garde-fou de confidentialité (fichiers, PDF, PNG, binaires)
+        run: python -m pytest -q tests/test_confidentialite.py
+      - name: Instruments d'observatoire (en-têtes FITS/XISF)
+        run: python -m pytest -q tests/test_observatoires_ohp.py

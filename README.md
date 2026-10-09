@@ -15,6 +15,9 @@
 - Automatic target detection, grouping, and telescope aliasing/merging
 - Filter detection (LRGB, narrowband Ha/OIII/SII, OSC, dual narrowband)
 - Instrument and telescope identification from built-in databases
+- Observatory instruments recognised from FITS/XISF headers: Observatoire de Haute-Provence T120
+  (Andor iKon-L 936, Andor Marana 4.2B-11) and IRIS (FLI ProLine 2048 / 4096), including the generic
+  `ACP->NTM` / `Andor Tech` / `FLI` strings (see `database/observatories.py`)
 - Per-night, per-target, and per-filter statistics
 - Mosaic panel detection
 - SIMBAD integration for canonical names and object types

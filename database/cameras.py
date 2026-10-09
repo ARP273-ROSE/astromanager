@@ -3248,6 +3248,13 @@ INSTRUMENT_HEADER_MAPPING = {
     'Z fc': 'Nikon Z fc',
 }
 
+# Observatory cameras (OHP T120, IRIS): see database/observatories.py. Only
+# serial numbers are mapped here; 'Andor Tech' or 'FLI' alone are generic and
+# resolved there from the whole header.
+from .observatories import OBSERVATORY_CAMERAS, OBSERVATORY_INSTRUMENT_HEADER_MAPPING  # noqa: E402
+SENSORS_DATABASE.update(OBSERVATORY_CAMERAS)
+INSTRUMENT_HEADER_MAPPING.update(OBSERVATORY_INSTRUMENT_HEADER_MAPPING)
+
 
 # ---------------------------------------------------------------------------
 # Camera lookup helpers

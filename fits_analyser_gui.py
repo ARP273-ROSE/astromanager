@@ -5211,6 +5211,21 @@ INSTRUMENT_HEADER_MAPPING = {
     'SIGMA FP': 'SIGMA FP', 'SIGMA FP L': 'SIGMA FP',
 }
 
+# Observatory instruments (OHP T120 and IRIS, used by the DU ECU of the
+# Observatoire de Paris): shared definitions in database/observatories.py.
+try:
+    from database.observatories import (
+        OBSERVATORY_TELESCOPES, OBSERVATORY_CAMERAS,
+        OBSERVATORY_TELESCOPE_HEADER_MAPPING, OBSERVATORY_INSTRUMENT_HEADER_MAPPING,
+        detect_observatory_equipment,
+    )
+    TELESCOPES_DATABASE.update(OBSERVATORY_TELESCOPES)
+    SENSORS_DATABASE.update(OBSERVATORY_CAMERAS)
+    TELESCOPE_HEADER_MAPPING.update(OBSERVATORY_TELESCOPE_HEADER_MAPPING)
+    INSTRUMENT_HEADER_MAPPING.update(OBSERVATORY_INSTRUMENT_HEADER_MAPPING)
+except ImportError:  # module run outside the application folder
+    detect_observatory_equipment = None
+
 def format_time(seconds):
     """Converts seconds to hours:minutes:seconds format"""
     time = timedelta(seconds=int(seconds))
@@ -10635,7 +10650,6 @@ def find_latex_executable():
             
             # Custom installations
             '/opt/tex/bin/pdflatex',
-            '/srv/texlive/*/bin/*/pdflatex',
             '/usr/local/bin/pdflatex',
             '/usr/bin/pdflatex',
             
@@ -16053,6 +16067,14 @@ def get_telescope_from_header(header):
     """Extract telescope name from FITS header using standard and common keywords."""
     if header is None:
         return 'Unknown'
+    # Observatory instruments first: their TELESCOP may be generic ('ACP->NTM')
+    if detect_observatory_equipment is not None:
+        try:
+            found = detect_observatory_equipment(header)
+            if found:
+                return found['telescope']
+        except Exception:
+            pass
     for key in ['TELESCOP', 'TELESCOPE', 'OBSERVAT', 'SCOPE', 'OPTIC', 'TELESCOPE_NAME', 'TELESCOPE-ID', 'OBSERVATORY']:
         try:
             val = header.get(key, '')
@@ -16066,6 +16088,14 @@ def get_instrument_from_header(header):
     """Extract instrument/camera name from FITS header using standard and common keywords."""
     if header is None:
         return 'Unknown'
+    # Observatory cameras first: their INSTRUME may be generic ('Andor Tech', 'FLI')
+    if detect_observatory_equipment is not None:
+        try:
+            found = detect_observatory_equipment(header)
+            if found and found.get('camera'):
+                return found['camera']
+        except Exception:
+            pass
     for key in ['INSTRUME', 'INSTRUMENT', 'CAMERA', 'DETECTOR', 'CCD-NAME', 'CAMNAME', 'SENSOR', 'DETECTOR-NAME', 'INSTRUMENT-ID']:
         try:
             val = header.get(key, '')

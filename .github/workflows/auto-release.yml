@@ -12,7 +12,8 @@ jobs:
   release:
     outputs:
       version: ${{ steps.version.outputs.new }}
-    if: github.actor != 'github-actions[bot]'
+    # « [no release] » dans le message du commit : pas de version, pas de tag, pas de Release.
+    if: github.actor != 'github-actions[bot]' && !contains(github.event.head_commit.message, '[no release]')
     runs-on: ubuntu-latest
     permissions:
       # Required for commit, tag, and release creation
