@@ -168,13 +168,6 @@ class AstroManagerWindow(QMainWindow):
         self.eta_label.setFixedWidth(120)
         progress_layout.addWidget(self.eta_label)
 
-        coffee_btn = QPushButton("☕")
-        coffee_btn.setFixedSize(22, 22)
-        coffee_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        coffee_btn.setToolTip(self._tr("Buy me a coffee", "Offrez-moi un café"))
-        coffee_btn.setStyleSheet("QPushButton { border: none; font-size: 9pt; color: #555; padding: 0; } QPushButton:hover { color: #c8a86e; }")
-        coffee_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl("https://github.com/ARP273-ROSE")))
-        progress_layout.addWidget(coffee_btn)
 
         main_layout.addLayout(progress_layout)
 
@@ -590,8 +583,7 @@ class AstroManagerWindow(QMainWindow):
             </ul>
             <p>{self._tr("License: MIT", "Licence: MIT")}</p>
             <p>{self._tr("Made with love for the astrophotography community.",
-                         "Fait avec amour pour la communauté d'astrophotographie.")}</p>
-            <p style="font-size: 8pt; color: #666;"><a href="https://github.com/ARP273-ROSE" style="color: #777; text-decoration: none;">☕</a></p>"""
+                         "Fait avec amour pour la communauté d'astrophotographie.")}</p>"""
         )
 
     def _open_manual(self):

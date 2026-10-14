@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.5.1 — 2026-10-14
+
+### Removed
+- The small "☕" button of the status bar and the "☕" link of *About*: they led to a personal
+  page. Nothing else changes.
+
 ## 1.5.0 — 2026-10-14
 
 ### Added
