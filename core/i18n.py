@@ -24,13 +24,31 @@ def get_lang() -> str:
     except Exception:
         pass
 
-    try:
-        loc = locale.getlocale()[0]
-        if loc and loc.startswith('fr'):
-            _detected_lang = 'fr'
-            return _detected_lang
-    except (ValueError, AttributeError):
-        pass
-
-    _detected_lang = 'en'
+    _detected_lang = detect_system_language()
     return _detected_lang
+
+
+def detect_system_language() -> str:
+    """'fr' si la langue du système est le français, sinon 'en'.
+
+    Qt lit la langue d'affichage correctement sur les trois systèmes ; la
+    locale Python sert de repli. Sous Windows, celle-ci vaut par exemple
+    « French_France » : la comparer à « fr » sans tenir compte de la casse,
+    sinon un Windows français démarrait en anglais.
+    """
+    try:
+        from PyQt6.QtCore import QLocale
+        langues = QLocale.system().uiLanguages()
+        if langues:
+            return 'fr' if langues[0].lower().startswith('fr') else 'en'
+    except Exception:
+        pass
+    for lire in (lambda: locale.getlocale()[0],
+                 lambda: __import__('os').environ.get('LANG')):
+        try:
+            loc = lire()
+        except (ValueError, AttributeError):
+            continue
+        if loc:
+            return 'fr' if loc.lower().startswith(('fr', 'french')) else 'en'
+    return 'en'

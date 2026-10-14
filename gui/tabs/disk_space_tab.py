@@ -1118,7 +1118,7 @@ class DiskSpaceTab(QWidget):
             self._display_details(result)
         elif not success:
             self._clear_reco_cards()
-            error_label = QLabel(f"Error: {message}")
+            error_label = QLabel(self._tr(f"Error: {message}", f"Erreur : {message}"))
             error_label.setStyleSheet("color: #b89090; padding: 10px;")
             self.reco_cards_layout.addWidget(error_label)
             self.reco_cards_layout.addStretch()

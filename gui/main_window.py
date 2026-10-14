@@ -40,7 +40,8 @@ from core import __version__
 class AstroManagerWindow(QMainWindow):
     """Main application window"""
 
-    _download_done_signal = pyqtSignal(bool, str)
+    # Résultat de la recherche de mise à jour, émis depuis un fil de fond
+    _update_result_signal = pyqtSignal(object, bool)
 
     def __init__(self):
         super().__init__()
@@ -73,9 +74,6 @@ class AstroManagerWindow(QMainWindow):
             self.setCursor(cursor)
         except Exception:
             pass
-
-        # Install bug reporter
-        self._init_bug_reporter()
 
         logger.info(f"AstroManager v{__version__} window initialized")
 
@@ -173,7 +171,7 @@ class AstroManagerWindow(QMainWindow):
         coffee_btn = QPushButton("☕")
         coffee_btn.setFixedSize(22, 22)
         coffee_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        coffee_btn.setToolTip("Buy me a coffee")
+        coffee_btn.setToolTip(self._tr("Buy me a coffee", "Offrez-moi un café"))
         coffee_btn.setStyleSheet("QPushButton { border: none; font-size: 9pt; color: #555; padding: 0; } QPushButton:hover { color: #c8a86e; }")
         coffee_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl("https://github.com/ARP273-ROSE")))
         progress_layout.addWidget(coffee_btn)
@@ -351,9 +349,23 @@ class AstroManagerWindow(QMainWindow):
         update_action.triggered.connect(self._check_for_updates)
         help_menu.addAction(update_action)
 
-        bug_action = QAction(self._tr("Report &Bug", "Signaler &Bug"), self)
+        bug_action = QAction(self._tr("Report a &problem...", "Signaler un &problème..."), self)
         bug_action.triggered.connect(self._show_bug_dialog)
         help_menu.addAction(bug_action)
+
+        # Envoi automatique des rapports (plantage, gel) : accord demandé au
+        # premier lancement, modifiable ici.
+        self.auto_report_action = QAction(self._tr(
+            "Send problem reports automatically",
+            "Envoyer automatiquement les rapports de problème"), self)
+        self.auto_report_action.setCheckable(True)
+        try:
+            import reporting as _rep
+            self.auto_report_action.setChecked(_rep.consentement() is True)
+        except Exception:
+            pass
+        self.auto_report_action.toggled.connect(self._set_auto_report)
+        help_menu.addAction(self.auto_report_action)
 
         shortcut_action = QAction(self._tr("Create Desktop Shortcut", "Créer raccourci bureau"), self)
         shortcut_action.triggered.connect(self._create_desktop_shortcut)
@@ -380,7 +392,8 @@ class AstroManagerWindow(QMainWindow):
         sys_info = self.config.get_system_info()
         workers = self.config.get_workers()
         self.status_system = QLabel(
-            f"Workers: {workers} | {sys_info.get('ram_gb', '?')} GB RAM"
+            self._tr(f"Workers: {workers} | {sys_info.get('ram_gb', '?')} GB RAM",
+                     f"Processus : {workers} | {sys_info.get('ram_gb', '?')} Go de RAM")
         )
         self.status_system.setStyleSheet(f"color: {COLORS['text_secondary']};")
         self.status_bar.addPermanentWidget(self.status_system)
@@ -397,75 +410,8 @@ class AstroManagerWindow(QMainWindow):
         signals.analysis_progress.connect(self._on_progress)
         signals.analysis_completed.connect(self._on_analysis_completed)
 
-        # Download completion signal (thread-safe)
-        self._download_done_signal.connect(self._on_download_done)
-
-    def _init_bug_reporter(self):
-        """Initialize anonymous bug reporter with crash dialog support"""
-        try:
-            from modules.bug_reporter import get_bug_reporter
-            self.bug_reporter = get_bug_reporter(version=__version__)
-            self.bug_reporter.set_crash_callback(self._on_crash_report)
-            self.bug_reporter.install_global_handler()
-            # Connect bug report signals
-            signals.bug_report_crash.connect(self._show_crash_dialog)
-            signals.bug_report_result.connect(self._on_report_result)
-        except Exception as e:
-            logger.warning(f"Bug reporter initialization failed: {e}")
-            self.bug_reporter = None
-
-    def _on_crash_report(self, report):
-        """Crash callback — called from any thread. Emits thread-safe signal."""
-        try:
-            signals.bug_report_crash.emit(report)
-        except Exception:
-            pass
-
-    def _show_crash_dialog(self, report):
-        """Show crash report consent dialog (runs on main/GUI thread via signal)."""
-        try:
-            from gui.dialogs.bug_report_dialog import CrashReportDialog
-            dialog = CrashReportDialog(
-                report, self.bug_reporter, lang=self.lang, parent=self)
-            dialog.exec()
-            if dialog.was_sent():
-                self._send_report_async(report)
-            else:
-                report_id = report.get('report_id', '?')
-                self._log(self._tr(
-                    f"Crash report saved locally: {report_id}",
-                    f"Rapport de crash sauvegardé localement : {report_id}"
-                ))
-        except Exception as e:
-            logger.error(f"Failed to show crash dialog: {e}")
-
-    def _send_report_async(self, report):
-        """Send a report in a background thread, emit result signal."""
-        import threading as _threading
-
-        def _worker():
-            try:
-                report_id, was_sent = self.bug_reporter.send_report(report)
-                signals.bug_report_result.emit(was_sent, report_id or '?')
-            except Exception as e:
-                logger.error(f"Failed to send report: {e}")
-                signals.bug_report_result.emit(False, report.get('report_id', '?'))
-
-        t = _threading.Thread(target=_worker, daemon=True)
-        t.start()
-
-    def _on_report_result(self, was_sent, report_id):
-        """Handle bug report send result — update status bar."""
-        if was_sent:
-            self.status_bar.showMessage(self._tr(
-                f"Bug report sent: {report_id}",
-                f"Rapport de bug envoyé : {report_id}"
-            ), 8000)
-        else:
-            self.status_bar.showMessage(self._tr(
-                f"Bug report saved locally: {report_id}",
-                f"Rapport de bug sauvegardé localement : {report_id}"
-            ), 8000)
+        # Résultat de la recherche de mise à jour (fil de fond -> fil graphique)
+        self._update_result_signal.connect(self._on_update_result)
 
     # =========================================================================
     # Event Handlers
@@ -644,21 +590,119 @@ class AstroManagerWindow(QMainWindow):
         )
 
     def _show_bug_dialog(self):
-        """Open in-app manual bug report dialog."""
-        if not self.bug_reporter:
-            QMessageBox.warning(self,
-                self._tr("Bug Report", "Rapport de Bug"),
-                self._tr("Bug reporter is not initialized.",
-                         "Le rapporteur de bugs n'est pas initialisé."))
+        """Signalement écrit (Aide > Signaler un problème), transmis au point
+        de collecte du kit commun (reporting.py) avec l'état de l'application.
+        Repli : un .zip sur le Bureau si le réseau manque."""
+        try:
+            import reporting
+        except Exception:
             return
+        title = self._tr("Report a problem", "Signaler un problème")
+        dlg = QDialog(self)
+        dlg.setWindowTitle(title)
+        dlg.resize(560, 400)
+        form = QVBoxLayout(dlg)
+        form.addWidget(QLabel(self._tr(
+            "Describe what happened and what you were doing:",
+            "Décrivez ce qui s'est passé et ce que vous faisiez :")))
+        from PyQt6.QtWidgets import QPlainTextEdit
+        texte = QPlainTextEdit()
+        texte.setPlaceholderText(self._tr(
+            "For example: the analysis stopped after the third folder...",
+            "Par exemple : l'analyse s'est arrêtée après le troisième dossier..."))
+        form.addWidget(texte)
+        note = QLabel(self._tr(
+            "The report contains the version, the system and the recent log; "
+            "no file of yours is sent.",
+            "Le rapport contient la version, le système et le journal récent ; "
+            "aucun de vos fichiers n'est envoyé."))
+        note.setWordWrap(True)
+        note.setStyleSheet("color: gray;")
+        form.addWidget(note)
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok
+                                | QDialogButtonBox.StandardButton.Cancel)
+        btns.button(QDialogButtonBox.StandardButton.Ok).setText(self._tr("Send", "Envoyer"))
+        btns.button(QDialogButtonBox.StandardButton.Cancel).setText(self._tr("Cancel", "Annuler"))
+        form.addWidget(btns)
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        description = texte.toPlainText().strip()
+        if not description:
+            QMessageBox.information(self, title, self._tr(
+                "Nothing was sent: the description is empty.",
+                "Rien n'a été envoyé : la description est vide."))
+            return
+        # Un signalement écrit à la main est toujours transmis : on vient de
+        # demander qu'on le lise. L'accord ne gouverne que l'automatique.
+        accord = reporting.consentement()
+        if accord is not True:
+            reporting.definir_consentement(True)
+        try:
+            etat = {'onglet': self.tab_widget.currentIndex(), 'langue': self.lang}
+        except Exception:
+            etat = {}
+        rapport = reporting.envoyer('manuel', description=description,
+                                    version=__version__, **etat)
+        if accord is not True:
+            reporting.definir_consentement(bool(accord))
+        try:
+            chemin = reporting.paquet_local(rapport, None)
+        except Exception:
+            chemin = None
+        if rapport.get('transmis', True) and chemin is None:
+            msg = self._tr("Your report has been sent. Thank you.",
+                           "Votre signalement a été transmis. Merci.")
+        else:
+            msg = self._tr(
+                f"No connection: the report was saved here:\n{chemin or '-'}",
+                f"Pas de connexion : le signalement est enregistré ici :\n{chemin or '-'}")
+        QMessageBox.information(self, title, msg)
 
-        from gui.dialogs.bug_report_dialog import ManualBugReportDialog
-        dialog = ManualBugReportDialog(
-            self.bug_reporter, lang=self.lang, parent=self)
-        dialog.exec()
-        if dialog.was_submitted():
-            report = dialog.get_report()
-            self._send_report_async(report)
+    def _set_auto_report(self, on):
+        """Envoi automatique des rapports (plantage, gel, crash natif)."""
+        try:
+            import reporting
+            reporting.definir_consentement(bool(on))
+        except Exception:
+            pass
+
+    def _ask_report_consent(self):
+        """Au premier lancement : demander l'accord pour l'envoi automatique
+        des rapports, puis signaler l'installation ou le démarrage du jour."""
+        try:
+            import reporting
+            premier = reporting.consentement() is None
+            if premier:
+                box = QMessageBox(self)
+                box.setWindowTitle("AstroManager")
+                box.setIcon(QMessageBox.Icon.Question)
+                box.setText(self._tr(
+                    "Send problem reports automatically?",
+                    "Envoyer automatiquement les rapports de problème ?"))
+                box.setInformativeText(self._tr(
+                    "When AstroManager crashes or freezes, a short technical "
+                    "report (version, system, error trace) can be sent so the "
+                    "problem gets fixed. No file of yours is ever sent. You "
+                    "can change this at any time in the Help menu.",
+                    "Quand AstroManager plante ou se fige, un court rapport "
+                    "technique (version, système, trace de l'erreur) peut être "
+                    "transmis pour que le problème soit corrigé. Aucun de vos "
+                    "fichiers n'est jamais envoyé. Ce choix se modifie à tout "
+                    "moment dans le menu Aide."))
+                oui = box.addButton(self._tr("Yes, send them", "Oui, les envoyer"),
+                                    QMessageBox.ButtonRole.AcceptRole)
+                box.addButton(self._tr("No", "Non"), QMessageBox.ButtonRole.RejectRole)
+                box.exec()
+                reporting.definir_consentement(box.clickedButton() is oui)
+                try:
+                    self.auto_report_action.setChecked(reporting.consentement() is True)
+                except Exception:
+                    pass
+            reporting.signaler_demarrage(premier=premier)
+        except Exception:
+            pass
 
     def _show_system_info(self):
         """Show system information dialog"""
@@ -696,135 +740,146 @@ class AstroManagerWindow(QMainWindow):
     # =========================================================================
 
     def _check_for_updates(self, silent=False):
-        """Check for updates via GitHub Releases API.
+        """Interroge GitHub dans un fil séparé (updater.py du kit commun).
 
-        Args:
-            silent: If True, only show a status bar message on update found
-                    and suppress all dialogs on no-update / error.
+        Paquet installé (Windows, macOS, Linux) : l'archive de la Release est
+        téléchargée et déballée dans app/, puis l'application redémarre.
+        Depuis les sources : on ouvre seulement la page de téléchargement.
         """
-        from core.updater import UpdateChecker, UpdateWorker
-        self._update_silent = silent
-
-        checker = UpdateChecker(__version__, self.config)
-
-        # Manual check: ignore interval throttle and skipped version
+        self._update_silent = bool(silent)
         if not silent:
-            checker.clear_skipped_version()
-
-        self._update_worker = UpdateWorker(
-            checker, respect_interval=silent, parent=self)
-        self._update_worker.update_found.connect(self._on_update_found)
-        self._update_worker.no_update.connect(self._on_no_update)
-        self._update_worker.check_failed.connect(self._on_update_error)
-        self._update_worker.start()
-
-    def _on_update_found(self, result):
-        """Handle update available (called on main thread via signal)."""
-        if self._update_silent:
-            v = result['latest_version']
-            msg = self._tr(
-                f"Update available: v{v} — Help > Check for Updates",
-                f"Mise à jour disponible : v{v} — Aide > Vérifier les mises à jour"
-            )
-            self.status_bar.showMessage(msg, 15000)
-        else:
-            self._show_update_dialog(result)
-
-    def _on_no_update(self):
-        """Handle no-update result."""
-        if not self._update_silent:
-            QMessageBox.information(self,
-                self._tr("Updates", "Mises à jour"),
-                self._tr(
-                    f"You are up to date (v{__version__}).",
-                    f"Vous êtes à jour (v{__version__})."
-                ))
-
-    def _on_update_error(self, message):
-        """Handle update check error."""
-        if not self._update_silent:
-            QMessageBox.warning(self,
-                self._tr("Update Check Failed", "Vérification échouée"),
-                self._tr(
-                    f"Could not check for updates:\n{message}",
-                    f"Impossible de vérifier les mises à jour :\n{message}"
-                ))
-
-    def _show_update_dialog(self, release_info):
-        """Show update available dialog with changelog."""
-        from gui.dialogs.update_dialog import UpdateDialog
-
-        dialog = UpdateDialog(release_info, __version__,
-                              lang=self.lang, parent=self)
-        dialog.exec()
-
-        if dialog.action == 'install':
-            self._do_update(release_info)
-        elif dialog.action == 'skip':
-            from core.updater import UpdateChecker
-            checker = UpdateChecker(__version__, self.config)
-            checker.skip_version(release_info['latest_version'])
-
-    def _do_update(self, release_info):
-        """Download and apply update (source installs only, not frozen .exe)"""
-        # Frozen .exe cannot self-update — redirect to GitHub
-        release_url = release_info.get('release_url') or release_info.get('url', '')
-        if getattr(sys, 'frozen', False):
-            QDesktopServices.openUrl(QUrl(release_url))
-            return
-
-        reply = QMessageBox.question(self,
-            self._tr("Update", "Mise à jour"),
-            self._tr(
-                "The application will restart after the update.\nContinue?",
-                "L'application va redémarrer après la mise à jour.\nContinuer?"
-            ),
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.Yes
-        )
-        if reply != QMessageBox.StandardButton.Yes:
-            return
-
-        self.status_bar.showMessage(self._tr(
-            "Downloading update...", "Téléchargement de la mise à jour..."))
-
-        app_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            self.status_bar.showMessage(self._tr(
+                "Checking for updates...", "Recherche de mises à jour..."))
 
         def _worker():
             try:
-                url = release_info['download_url']
-                if not url.startswith('https://github.com/') and not url.startswith('https://api.github.com/'):
-                    self._download_done_signal.emit(False, "Invalid download URL")
-                    return
-                from modules.updater import download_and_apply_update
-                download_and_apply_update(url, app_dir)
-                self._download_done_signal.emit(True, "")
-            except Exception as e:
-                self._download_done_signal.emit(False, str(e))
+                import updater
+                info = updater.check(__version__)
+            except Exception:                 # ne jamais faire tomber l'app
+                info = None
+            self._update_result_signal.emit(info, not silent)
 
-        t = threading.Thread(target=_worker, daemon=True)
-        t.start()
+        self._update_thread = threading.Thread(
+            target=_worker, daemon=True, name='astromanager-maj')
+        self._update_thread.start()
 
-    def _on_download_done(self, success, message):
-        """Handle download completion"""
-        if success:
-            QMessageBox.information(self,
-                self._tr("Update Installed", "Mise à jour installée"),
-                self._tr(
-                    "Update installed successfully. The application will now restart.",
-                    "Mise à jour installée avec succès. L'application va redémarrer."
-                ))
-            app_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            QProcess.startDetached(sys.executable, [os.path.join(app_dir, 'astromanager.py')])
-            QApplication.quit()
-        else:
+    def _on_update_result(self, info, manual):
+        L = self.lang
+        title = self._tr("Updates", "Mises à jour")
+        if not info:
             self.status_bar.showMessage("")
-            QMessageBox.critical(self,
-                self._tr("Update Failed", "Mise à jour échouée"),
-                self._tr(
-                    f"Update failed:\n{message}",
-                    f"La mise à jour a échoué :\n{message}"
-                ))
+            if manual:
+                QMessageBox.information(self, title, self._tr(
+                    f"You are up to date (v{__version__}).",
+                    f"Vous êtes à jour (v{__version__})."))
+            return
+        try:
+            import updater
+            installe = bool(updater.is_packaged())
+            page = f"https://github.com/{updater.REPO}/releases/latest"
+        except Exception:
+            installe, page = False, ""
+        box = QMessageBox(self)
+        box.setWindowTitle(title)
+        box.setText(self._tr(
+            f"Version {info['version']} is available (installed: {__version__}).",
+            f"La version {info['version']} est disponible (installée : {__version__})."))
+        notes = (info.get('notes') or '').strip()
+        try:
+            import updater as _upd
+            # Les notes publiées portent les deux langues : on ne montre que
+            # celle de l'interface.
+            notes = _upd.notes_dans_la_langue(notes, L).strip()
+        except Exception:
+            pass
+        if notes:
+            box.setDetailedText(notes[:4000])
+        if installe:
+            oui = box.addButton(self._tr("Install and restart", "Installer et redémarrer"),
+                                QMessageBox.ButtonRole.AcceptRole)
+        else:
+            box.setInformativeText(self._tr(
+                "This copy runs from the sources: download the new version "
+                "from the release page.",
+                "Cette copie tourne depuis les sources : téléchargez la "
+                "nouvelle version sur la page de publication."))
+            oui = box.addButton(self._tr("Open the download page", "Ouvrir la page de téléchargement"),
+                                QMessageBox.ButtonRole.AcceptRole)
+        box.addButton(self._tr("Later", "Plus tard"), QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if box.clickedButton() is not oui:
+            return
+        if not installe:
+            if page:
+                QDesktopServices.openUrl(QUrl(page))
+            return
+        self._download_update(info)
+
+    def _download_update(self, info):
+        """Télécharge et pose l'archive dans un fil de fond. Le fil ne touche
+        jamais Qt : il écrit dans un dict qu'un QTimer relit à 10 Hz."""
+        import updater
+        from PyQt6.QtWidgets import QProgressDialog
+        title = self._tr("Updates", "Mises à jour")
+        dlg = QProgressDialog(self._tr("Downloading the update...",
+                                       "Téléchargement de la mise à jour..."),
+                              None, 0, 100, self)
+        dlg.setWindowTitle(title)
+        dlg.setWindowModality(Qt.WindowModality.WindowModal)
+        dlg.setCancelButton(None)
+        dlg.setMinimumDuration(0)
+        etat = {'fait': 0, 'total': 0, 'fini': False, 'erreur': None, 'pose': False}
+
+        def _progress(done, total):
+            etat['fait'], etat['total'] = done, total
+
+        def _worker():
+            try:
+                etat['pose'] = bool(updater.download_and_apply(info, progress=_progress))
+            except Exception as exc:
+                etat['erreur'] = exc
+            finally:
+                etat['fini'] = True
+
+        threading.Thread(target=_worker, daemon=True,
+                         name='astromanager-maj-pose').start()
+        poll = QTimer(self)
+        poll.setInterval(100)
+
+        def _tick():
+            if not etat['fini']:
+                if etat['total'] > 0:
+                    dlg.setValue(min(99, etat['fait'] * 100 // etat['total']))
+                return
+            poll.stop()
+            dlg.close()
+            err = etat['erreur']
+            if err is not None or not etat['pose']:
+                texte = str(err) if err is not None else 'archive'
+                verrouille = (isinstance(err, PermissionError)
+                              or 'WinError 32' in texte
+                              or 'used by another process' in texte
+                              or 'utilisé par un autre processus' in texte)
+                QMessageBox.warning(self, title, self._tr(
+                    "A file of the application is in use. Close every "
+                    "AstroManager window and try again.",
+                    "Un fichier de l'application est en cours d'utilisation. "
+                    "Fermez toutes les fenêtres d'AstroManager et réessayez.")
+                    if verrouille else self._tr(
+                    f"The update failed:\n{texte}",
+                    f"La mise à jour a échoué :\n{texte}"))
+                return
+            QMessageBox.information(self, title, self._tr(
+                "The update is installed. AstroManager will now restart.",
+                "La mise à jour est installée. AstroManager va redémarrer."))
+            try:
+                updater.restart()
+            finally:
+                QApplication.quit()
+
+        poll.timeout.connect(_tick)
+        poll.start()
+        self._update_poll = poll
 
     def _show_settings(self):
         """Show settings dialog with all configurable options"""
@@ -1180,7 +1235,11 @@ class AstroManagerWindow(QMainWindow):
         bug_form = QFormLayout(bug_group)
 
         cb_bugs = QCheckBox()
-        cb_bugs.setChecked(self.config.get('bug_reporting.enabled', False))
+        try:
+            import reporting as _rep
+            cb_bugs.setChecked(_rep.consentement() is True)
+        except Exception:
+            cb_bugs.setChecked(False)
         cb_bugs.setToolTip(self._tr("Send anonymous crash reports to help improve AstroManager", "Envoyer des rapports de crash anonymes pour améliorer AstroManager"))
         bug_form.addRow(self._tr("Enable:", "Activer:"), cb_bugs)
 
@@ -1216,7 +1275,11 @@ class AstroManagerWindow(QMainWindow):
             self.config.set('analysis.generate_graphs', cb_graphs.isChecked())
             self.config.set('analysis.generate_latex', cb_latex.isChecked())
             self.config.set('analysis.generate_csv', cb_csv.isChecked())
-            self.config.set('bug_reporting.enabled', cb_bugs.isChecked())
+            self._set_auto_report(cb_bugs.isChecked())
+            try:
+                self.auto_report_action.setChecked(cb_bugs.isChecked())
+            except Exception:
+                pass
             self.config.set('file_naming.pattern', naming_pattern_input.text().strip())
             self.config.save_config()
 
@@ -1610,8 +1673,6 @@ class AstroManagerWindow(QMainWindow):
         except Exception as e:
             logger.warning(f"WAL checkpoint failed: {e}")
 
-        if self.bug_reporter:
-            self.bug_reporter.uninstall_global_handler()
         event.accept()
 
 
@@ -1623,6 +1684,17 @@ def create_application():
 
     app.setApplicationName("AstroManager")
     app.setApplicationVersion(__version__)
+
+    # Verrou nommé lu par l'installeur Inno (AppMutex = <nom_fichier>EnCours) :
+    # installer par-dessus une application ouverte ne remplacerait pas les
+    # fichiers en cours d'utilisation, et annoncerait pourtant « terminé ».
+    if sys.platform == 'win32':
+        try:
+            import ctypes
+            app._mutex_installeur = ctypes.windll.kernel32.CreateMutexW(
+                None, False, 'AstroManagerEnCours')
+        except Exception:
+            pass
 
     # Set application icon (taskbar + window)
     if getattr(sys, 'frozen', False):
@@ -1657,15 +1729,42 @@ def main():
     window = AstroManagerWindow()
     window.show()
 
-    # Offer desktop shortcut on first launch
-    from shortcut_helper import offer_shortcut
-    offer_shortcut("AstroManager", "astromanager.py", "assets/icon.ico",
-                   get_config=lambda k: config.get(k) if config else None,
-                   set_config=lambda k, v: (config.set(k, v), config.save_config()) if config else None)
+    try:
+        import updater
+        installe = bool(updater.is_packaged())
+    except Exception:
+        installe = False
 
-    # Auto-check for updates after a delay (let the UI load first)
-    if config and config.get('application.check_updates_on_startup', True):
+    # Raccourci sur le bureau : seulement depuis les sources. Installée,
+    # l'application a déjà le sien (installeur Windows, installer.sh sous
+    # Linux, dossier Applications sous macOS).
+    if not installe:
+        from shortcut_helper import offer_shortcut
+        offer_shortcut("AstroManager", "astromanager.py", "assets/icon.ico",
+                       get_config=lambda k: config.get(k) if config else None,
+                       set_config=lambda k, v: (config.set(k, v), config.save_config()) if config else None)
+
+    # Accord pour l'envoi automatique des rapports (premier lancement), puis
+    # preuve de vie ; et recherche silencieuse des mises à jour 3 s après
+    # l'ouverture, seulement pour une version installée.
+    QTimer.singleShot(1200, window._ask_report_consent)
+    if installe and (not config or config.get('application.check_updates_on_startup', True)):
         QTimer.singleShot(3000, lambda: window._check_for_updates(silent=True))
+
+    # Vigie anti-gel : un fil graphique bloqué ne laisse sinon aucune trace ;
+    # la pile capturée nomme l'opération fautive.
+    try:
+        import reporting
+        vigie = reporting.Vigie(seuil=10.0, periode=2.0)
+        vigie.demarrer()
+        minuteur = QTimer(window)
+        minuteur.timeout.connect(vigie.battre)
+        # 1 s, plus court que la période de la vigie (2 s) : son premier
+        # contrôle trouve déjà un battement.
+        minuteur.start(1000)
+        window._vigie, window._vigie_timer = vigie, minuteur
+    except Exception:
+        pass
 
     return app.exec()
 

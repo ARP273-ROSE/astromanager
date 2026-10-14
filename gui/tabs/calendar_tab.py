@@ -253,10 +253,8 @@ class _DayCell(QFrame):
             self.frames_label.setText("")
             self.time_label.setText("")
             self.targets_label.setText("")
-            if lang == 'fr':
-                self.setToolTip(f"{date_str} — Aucune donnée")
-            else:
-                self.setToolTip(f"{date_str} — No data")
+            self.setToolTip(f"{date_str} — " + (
+                "Aucune donnée" if lang == 'fr' else "No data"))
 
         self.setStyleSheet(f"""
             _DayCell {{

@@ -4,6 +4,8 @@
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg)]()
 
+*Version française : [README.fr.md](README.fr.md).*
+
 **AstroManager** is a comprehensive, professional-grade file management suite designed specifically for astrophotographers. It combines powerful FITS/XISF analysis, frame quality scoring, universal compression, PixInsight WBPP export, celestial sky charting, observation calendars, N.I.N.A. analytics, FWHM mapping, cross-section comparison, calibration matching, and storage optimization — all in a modern, cosmic-themed interface with 18 organized tabs.
 
 ---
@@ -217,13 +219,13 @@ Inspired by [AstroCrossSections](https://github.com/brentmantooth/AstroCrossSect
 - File organization with presets (by type, date, target, custom)
 - SSD vs HDD detection (Windows WMI, Linux /sys/block, macOS diskutil)
 
-### 🔄 Automatic Update Checker
-- Checks GitHub Releases for new versions (opt-in, disabled by default)
-- Single HTTPS call to GitHub API, max once per 24 hours
-- Non-blocking background check via QThread
-- Skip This Version option to dismiss specific releases
-- Manual check via Help > Check for Updates
-- Fails silently with no internet (5-second timeout)
+### 🔄 Automatic Updates (Windows, macOS, Linux)
+- The installed application looks for a new version on GitHub Releases at startup
+  (can be turned off in Settings) and on demand via Help > Check for Updates
+- It downloads only the small application archive (`astromanager-app-X.Y.Z.zip`),
+  checks that it comes from GitHub, unpacks it and restarts — no installer to run again
+- Release notes are shown in the interface language
+- Run from the sources, it only opens the download page
 
 ### 🖥️ Modern Interface
 - Cosmic dark theme with muted neon accents
@@ -242,13 +244,29 @@ Inspired by [AstroCrossSections](https://github.com/brentmantooth/AstroCrossSect
 - Multi-tier caching: Memory → SQLite → Disk
 - Auto-detection of system capabilities (CPU, RAM, storage type)
 - Auto-tuning of worker count and batch size
-- Anonymous crash reporting for continuous improvement
+- Problem reports (crash, freeze, native crash, written report via Help > Report a
+  problem), sent only with your consent, asked at first launch; no file of yours is sent
 
 ---
 
 ## Quick Start
 
-### Recommended: Portable Launcher (NAS / Multi-PC)
+### Download (recommended)
+
+Ready-to-use packages, Python included, on the
+[Releases page](https://github.com/ARP273-ROSE/astromanager/releases/latest):
+
+| System | File |
+|---|---|
+| Windows | `AstroManager-Setup.exe` — permanent link: [latest installer](https://github.com/ARP273-ROSE/astromanager/releases/latest/download/AstroManager-Setup.exe) |
+| macOS (Apple Silicon / Intel) | `AstroManager-X.Y.Z-macos-arm64.dmg` / `-macos-x86_64.dmg` |
+| Linux (x86_64 / ARM64) | `AstroManager-X.Y.Z-linux-x86_64.tar.gz` / `-linux-arm64.tar.gz`, then `./installer.sh` |
+
+No administrator rights are needed. Settings, database and reports live outside
+the installation folder (`%APPDATA%\AstroManager` on Windows, `~/.astromanager`
+elsewhere) and survive updates.
+
+### From the sources: Portable Launcher (NAS / Multi-PC)
 
 ```bash
 git clone https://github.com/ARP273-ROSE/astromanager.git
@@ -281,26 +299,17 @@ python astromanager.py
 
 > **Note:** AstroManager also auto-installs missing dependencies on first launch.
 
-### Standalone Executable (.exe / AppImage)
+### Building the packages
 
-You can build a self-contained executable that bundles Python, all dependencies, and data files — no installation required.
-
-#### Windows (.exe)
-
-```bash
-# From an activated venv with all dependencies installed:
-pip install pyinstaller
-build.bat
-# → dist\AstroManager\AstroManager.exe
-```
-
-#### Linux / macOS
+The packages are built by GitHub Actions (`.github/workflows/release.yml`) when a
+`vX.Y.Z` tag is pushed: Windows installer (embedded Python + Inno Setup,
+`build_package.py`, `installer.iss`), macOS disk images and Linux archives
+(standalone CPython, `build_unix.py`), and the update archive, all in one Release.
+The version lives in the `VERSION` file only. Locally, on Linux or macOS:
 
 ```bash
-pip install pyinstaller
-chmod +x build.sh
-./build.sh
-# → dist/AstroManager/AstroManager
+python3 build_unix.py          # → dist/AstroManager/ and the .tar.gz
+dist/AstroManager/AstroManager.sh --check
 ```
 
 ---
@@ -438,7 +447,7 @@ Access via **Tools → Settings** or **Ctrl+,**
 | **Performance** | Workers (0=auto), Batch size |
 | **Compression** | Default profile, Delete source, Verify integrity |
 | **Analysis** | SIMBAD, Plate solving, Weather defaults |
-| **Bug Reporting** | Enable/disable anonymous crash reports |
+| **Bug Reporting** | Send problem reports automatically (same choice as Help > Send problem reports automatically) |
 
 ### Configuration File
 
@@ -505,8 +514,11 @@ astromanager/
 ├── requirements.txt             # Python dependencies
 ├── launch.bat / launch.sh       # Portable launchers (local venv)
 ├── run.bat / run.sh             # Legacy launchers
-├── build.bat / build.sh         # PyInstaller build scripts
-├── astromanager.spec            # PyInstaller spec file
+├── build_package.py             # Windows package (embedded Python)
+├── installer.iss                # Windows installer (Inno Setup)
+├── build_unix.py                # macOS / Linux packages
+├── kit.json                     # Packaging settings (shared kit)
+├── updater.py / reporting.py    # Automatic update / problem reports
 ├── LICENSE                      # MIT License
 ├── USER_MANUAL_EN.pdf           # English user manual
 ├── USER_MANUAL_FR.pdf           # French user manual
@@ -518,14 +530,11 @@ astromanager/
 │   ├── i18n.py                  # Language detection (auto/en/fr)
 │   ├── workers.py               # Unified worker (QThread job queue)
 │   ├── signals.py               # Global signal bus (PyQt6)
-│   └── updater.py               # Update checker coordinator
 │
 ├── gui/
 │   ├── main_window.py           # Main window (18 tabs, menu, console)
 │   ├── theme.py                 # Cosmic theme engine + filter normalization
 │   ├── dialogs/
-│   │   ├── bug_report_dialog.py # Crash report & bug report dialogs
-│   │   └── update_dialog.py     # Update notification dialog
 │   └── tabs/
 │       ├── analysis_tab.py      # 📊 Analysis
 │       ├── compression_tab.py   # 🗜️ Compression
@@ -557,8 +566,6 @@ astromanager/
 │   ├── plate_solving.py         # ASTAP/Astrometry.net wrapper
 │   ├── weather_api.py           # Open-Meteo weather client
 │   ├── observation_history.py   # Observation history stats + export
-│   ├── bug_reporter.py          # Anonymous crash reporting
-│   ├── updater.py               # GitHub update checker & installer
 │   ├── file_organizer.py        # File organization with presets
 │   ├── stf_stretch.py           # STF autostretch (NEW v1.3.0)
 │   ├── fwhm_map.py              # FWHM heatmap analysis (NEW v1.3.0)

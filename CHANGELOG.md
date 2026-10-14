@@ -1,8 +1,22 @@
 # Changelog
 
-## Unreleased — 2026-10-09
+## 1.4.0 — 2026-10-14
 
 ### Added
+- **macOS and Linux packages**, built by the same single workflow as the Windows installer
+  (`release.yml`, triggered by a `vX.Y.Z` tag): `.dmg` for Apple Silicon and Intel, `.tar.gz`
+  for Linux x86_64 and ARM64 with `installer.sh` (user install, menu entry, no sudo), plus the
+  permanent link `releases/latest/download/AstroManager-Setup.exe`.
+- **Automatic update on all three systems** through the shared kit (`updater.py`): it downloads
+  the application archive `astromanager-app-X.Y.Z.zip`, refuses any address outside GitHub,
+  restores executable bits, and shows the release notes in the interface language.
+- Problem reports (`reporting.py`): consent asked at first launch, *Help > Report a problem…*
+  and *Help > Send problem reports automatically*; crashes, native crashes and interface
+  freezes are reported (freeze watchdog). Reports stay outside the installation folder.
+- `--check`: checks that the application and its dependencies load, then exits (used by the
+  package build on every system).
+- Tests: no hard-coded interface text (`tests/test_i18n_textes.py`), interface under Xvfb
+  (`tests/test_gui.py`), both run by CI.
 - Observatory instruments of the Observatoire de Haute-Provence used by the DU ECU of the Observatoire de
   Paris, recognised automatically from FITS and XISF headers (`database/observatories.py`):
   - T120 (1 200 mm Newtonian, measured focal length 7 232 mm, f/6) with the Andor iKon-L 936
@@ -13,9 +27,21 @@
   Keywords used: `TELESCOP` ('OHP T120', 'IRIS OHP', 'ACP->NTM' with `OBSERVAT` = 'IRiS'), `INSTRUME`
   ('Andor Tech', 'Andor sCMOS (SDK3)', FLI serial numbers or 'FLI'), `APTDIA`, `FOCALLEN`, `XPIXSZ`,
   `XBINNING`, `NAXIS1`. Tests on real, anonymised headers (`tests/test_observatoires_ohp.py`).
-- `[no release]` in a commit message skips the automatic release.
 
 ### Changed
+- The Windows installer now deletes the previous version before copying the new one, and
+  detects a running AstroManager (named mutex `AstroManagerEnCours`).
+- Releases are published only by `release.yml` on a version tag; the automatic patch bump on
+  every push to `main` (`auto-release.yml`) is gone, as is the source-zipball updater with its
+  `SHA256SUMS` asset.
+- On Windows, a French system (locale `French_France`) now starts the interface in French.
+- The remaining hard-coded texts (PixInsight import, disk space, target tracking, status bar,
+  calendar) are translated.
 - Removal of personal mentions; installer publisher, header of `reporting.py` and author line now read
   ARP273-ROSE. Privacy guard `tests/test_confidentialite.py` (files, PDF text, PNG, binaries), run by CI.
 - The Andor iKon-L 936 entry now uses datasheet values (read noise 2.9 e-, QE 0.9).
+
+### Removed
+- PyInstaller build (`astromanager.spec`, `build.bat`, `build.sh`), the former in-app update
+  dialog and the former bug reporter (its endpoint did not exist; it wrote into the program
+  folder).

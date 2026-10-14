@@ -394,7 +394,7 @@ class TargetTrackingTab(QWidget):
             self._compute_stats(target, observations)
 
         except Exception as e:
-            self.notes_text.setText(f"Error loading target: {e}")
+            self.notes_text.setText(self._tr(f"Error loading target: {e}", f"Erreur au chargement de la cible : {e}"))
 
     def _display_target_info(self, target):
         """Display target information"""

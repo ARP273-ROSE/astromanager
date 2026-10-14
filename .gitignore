@@ -65,3 +65,7 @@ _crash_report.json
 dist/
 installer_out/
 .build_cache/
+# paquets produits par build_unix.py
+*-linux-*.tar.gz
+*-app-*.zip
+*.dmg

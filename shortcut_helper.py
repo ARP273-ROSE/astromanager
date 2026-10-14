@@ -19,9 +19,11 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 # ── i18n ─────────────────────────────────────────────────────────────────────
+# Même langue que l'interface : le réglage de l'application, sinon celle du
+# système (core.i18n).
 try:
-    import locale
-    _LANG = "fr" if (locale.getdefaultlocale()[0] or "").startswith("fr") else "en"
+    from core.i18n import get_lang as _get_lang
+    _LANG = _get_lang()
 except Exception:
     _LANG = "en"
 

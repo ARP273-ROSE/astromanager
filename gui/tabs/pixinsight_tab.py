@@ -410,7 +410,7 @@ class PixInsightTab(QWidget):
 
             n_sf = result.total_subframes
             n_int = len(result.integrations)
-            QMessageBox.information(self, "Import",
+            QMessageBox.information(self, self._tr("Import", "Importation"),
                 self._tr(
                     f"Imported {n_sf} subframes, {n_int} integrations.",
                     f"Importé {n_sf} subframes, {n_int} intégrations."
@@ -420,7 +420,7 @@ class PixInsightTab(QWidget):
 
         except Exception as e:
             logger.error(f"Import failed: {e}", exc_info=True)
-            QMessageBox.warning(self, "Error",
+            QMessageBox.warning(self, self._tr("Error", "Erreur"),
                 self._tr(f"Import failed: {e}", f"Échec import : {e}"))
 
     def _import_folder(self):
@@ -439,7 +439,7 @@ class PixInsightTab(QWidget):
 
             results = parse_log_folder(folder)
             if not results:
-                QMessageBox.information(self, "Import",
+                QMessageBox.information(self, self._tr("Import", "Importation"),
                     self._tr("No PixInsight logs found in this folder.",
                               "Aucun log PixInsight trouvé dans ce dossier."))
                 return
@@ -465,7 +465,7 @@ class PixInsightTab(QWidget):
                 store_results(r, new_id)
                 imported += 1
 
-            QMessageBox.information(self, "Import",
+            QMessageBox.information(self, self._tr("Import", "Importation"),
                 self._tr(
                     f"Imported {imported} logs ({skipped} already imported).",
                     f"Importé {imported} logs ({skipped} déjà importés)."
@@ -475,7 +475,7 @@ class PixInsightTab(QWidget):
 
         except Exception as e:
             logger.error(f"Folder import failed: {e}", exc_info=True)
-            QMessageBox.warning(self, "Error",
+            QMessageBox.warning(self, self._tr("Error", "Erreur"),
                 self._tr(f"Import failed: {e}", f"Échec import : {e}"))
 
     # =========================================================================

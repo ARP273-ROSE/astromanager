@@ -52,6 +52,16 @@ if sys.stderr is None:
 multiprocessing.freeze_support()
 
 
+def _empaquete() -> bool:
+    """Vrai dans le paquet autonome du kit : python/ a côté de app/.
+
+    Windows : python/python.exe ; macOS et Linux : python/bin/python3.
+    Les dépendances y sont déjà posées par la construction : rien à installer.
+    """
+    py = Path(__file__).resolve().parent.parent / 'python'
+    return (py / 'python.exe').exists() or (py / 'bin' / 'python3').exists()
+
+
 def _get_base_dir():
     """Return base directory (works in dev and frozen .exe)."""
     if getattr(sys, 'frozen', False):
@@ -120,8 +130,9 @@ def _check_and_install(package_name, import_name=None, pip_name=None):
 
 def _setup_dependencies():
     """Auto-install all required dependencies."""
-    # Skip when running as a frozen .exe — everything is already bundled
-    if getattr(sys, 'frozen', False):
+    # Skip when running as a frozen .exe or from the self-contained package:
+    # everything is already bundled
+    if getattr(sys, 'frozen', False) or _empaquete():
         return True
 
     # Only run in main process (not in ProcessPoolExecutor workers)
@@ -608,6 +619,30 @@ def _poser_filet_plantage(rapports):
     sys.excepthook = filet
 
 
+def _verifier_installation() -> int:
+    """--check : l'application et ses dépendances se chargent-elles ?
+
+    Lancé par la construction des paquets (Windows, macOS, Linux) avec
+    l'interpréteur embarqué : une dépendance oubliée se voit ici, et non au
+    premier lancement chez l'utilisateur. Aucune fenêtre n'est ouverte.
+    """
+    os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
+    modules = ['numpy', 'astropy.io.fits', 'xisf', 'matplotlib', 'PyQt6.QtWidgets',
+               'core', 'core.config', 'core.database', 'gui.main_window',
+               'modules.compression', 'parsers', 'analyzers', 'reporting', 'updater']
+    try:
+        for nom in modules:
+            __import__(nom)
+        from PyQt6.QtWidgets import QApplication
+        app = QApplication.instance() or QApplication(sys.argv[:1])
+        del app
+    except Exception as exc:
+        print(f"AstroManager {__version__} : ECHEC / FAILED -- {type(exc).__name__}: {exc}")
+        return 1
+    print(f"AstroManager {__version__} : OK ({len(modules)} modules, Qt)")
+    return 0
+
+
 def main():
     """Main entry point"""
     parser = argparse.ArgumentParser(
@@ -638,6 +673,9 @@ For more information, visit: https://github.com/ARP273-ROSE/astromanager
                              help='Optimize database (VACUUM)')
     maint_group.add_argument('--debug', action='store_true',
                              help='Enable debug logging')
+    maint_group.add_argument('--check', action='store_true',
+                             help='Check that the application and its dependencies '
+                                  'load, then exit (used by the package build)')
 
     # CLI analysis arguments
     cli_group = parser.add_argument_group('CLI Analysis')
@@ -674,6 +712,9 @@ For more information, visit: https://github.com/ARP273-ROSE/astromanager
                             help='With --optimize-storage: only extract duplicates, skip compression')
 
     args = parser.parse_args()
+
+    if args.check:
+        return _verifier_installation()
 
     # Remontee d'incidents : posee avant toute autre chose, pour couvrir aussi
     # ce qui casse pendant l'initialisation.

@@ -44,6 +44,18 @@
     "gui.main_window",
     "modules.compression",
     "parsers",
-    "analyzers"
-  ]
+    "analyzers",
+    "astropy.io.fits",
+    "xisf",
+    "matplotlib",
+    "reporting",
+    "updater"
+  ],
+  "icone_png": "assets/icon.png",
+  "icone_grande": "assets/icon.png",
+  "nom_affiche_fr": "AstroManager",
+  "nom_affiche_en": "AstroManager",
+  "description_fr": "Gestion et analyse des fichiers d'astrophotographie (FITS, XISF)",
+  "description_en": "Astrophotography file manager and analyser (FITS, XISF)",
+  "categories_linux": "Science;Astronomy;Graphics;"
 }
