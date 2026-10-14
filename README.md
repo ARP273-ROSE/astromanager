@@ -228,7 +228,9 @@ Inspired by [AstroCrossSections](https://github.com/brentmantooth/AstroCrossSect
 - Run from the sources, it only opens the download page
 
 ### 🖥️ Modern Interface
-- Cosmic dark theme with muted neon accents
+- Cosmic dark theme with muted neon accents — a fixed look (Fusion, complete palette, embedded font) that does not change with the system's theme
+- Full file browser for Open / Save, including on Linux
+- PDF user manual (French / English) from Help > User manual
 - **18-tab** organized workflow
 - Bilingual support (English / French) with auto-detection
 - Tooltips on every widget (bilingual)
@@ -520,8 +522,10 @@ astromanager/
 ├── kit.json                     # Packaging settings (shared kit)
 ├── updater.py / reporting.py    # Automatic update / problem reports
 ├── LICENSE                      # MIT License
-├── USER_MANUAL_EN.pdf           # English user manual
-├── USER_MANUAL_FR.pdf           # French user manual
+├── docs/manuel-en.pdf           # English user manual (Help > User manual)
+├── docs/manuel-fr.pdf           # French user manual
+├── docs/src/, docs/captures.py  # manual sources, real screenshots
+├── assets/make_logo.py          # icon.svg (single source) -> PNG, .ico, .icns
 │
 ├── core/
 │   ├── __init__.py              # Version (1.3.0)

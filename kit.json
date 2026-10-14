@@ -12,7 +12,8 @@
     "fits_analyser_gui.py",
     "shortcut_helper.py",
     "reporting.py",
-    "updater.py"
+    "updater.py",
+    "interface_kit.py"
   ],
   "paquets": [
     "core",
@@ -27,9 +28,9 @@
   "assets": [
     "VERSION",
     "README.md",
+    "README.fr.md",
     "LICENSE",
-    "USER_MANUAL_FR.pdf",
-    "USER_MANUAL_EN.pdf"
+    "docs"
   ],
   "requirements": "requirements.txt",
   "pip": [],
@@ -49,13 +50,15 @@
     "xisf",
     "matplotlib",
     "reporting",
-    "updater"
+    "updater",
+    "interface_kit"
   ],
-  "icone_png": "assets/icon.png",
-  "icone_grande": "assets/icon.png",
+  "icone_png": "assets/icon_256.png",
+  "icone_grande": "assets/icon_512.png",
   "nom_affiche_fr": "AstroManager",
   "nom_affiche_en": "AstroManager",
   "description_fr": "Gestion et analyse des fichiers d'astrophotographie (FITS, XISF)",
   "description_en": "Astrophotography file manager and analyser (FITS, XISF)",
-  "categories_linux": "Science;Astronomy;Graphics;"
+  "categories_linux": "Science;Astronomy;Graphics;",
+  "icone_icns": "assets/icon.icns"
 }

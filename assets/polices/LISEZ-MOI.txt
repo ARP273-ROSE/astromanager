@@ -1,0 +1,12 @@
+Polices embarquées / Embedded fonts
+===================================
+
+Fournies avec le programme pour que l'interface garde le même aspect sur tous
+les ordinateurs, quels que soient le thème, les polices ou la langue du
+système. / Shipped with the program so that the interface looks the same on
+every computer, whatever the system's theme, fonts or language.
+
+Source Sans 3 (Regular, Semibold, Bold)
+  © 2023 Adobe (http://www.adobe.com/), with Reserved Font Name 'Source'.
+
+SIL Open Font License, version 1.1 : https://openfontlicense.org

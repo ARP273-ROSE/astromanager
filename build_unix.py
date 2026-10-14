@@ -302,6 +302,13 @@ echo "  $CIBLE/$NOM_APP.sh"
 def _icone_macos(resources: Path) -> str:
     """Construit l'icone .icns avec les outils du systeme (sips, iconutil).
     Facultatif : sans icone, le bundle fonctionne tout de meme."""
+    # Une icone .icns fournie (kit.json « icone_icns », produite depuis la
+    # meme source SVG que les autres) l'emporte : rien a reconstruire.
+    icns = KIT.get('icone_icns') or ''
+    if icns and (ROOT / icns).is_file():
+        shutil.copy2(ROOT / icns, resources / 'icone.icns')
+        log('icone macOS : ' + icns)
+        return 'icone.icns'
     src = ROOT / ICONE_GRANDE if ICONE_GRANDE else None
     if src is None or not src.exists() or not shutil.which('iconutil') or not shutil.which('sips'):
         return ''

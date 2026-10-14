@@ -10,7 +10,7 @@ optimisation du stockage. L'interface est en français et en anglais : la langue
 du système au premier lancement, puis celle choisie dans les réglages.
 
 Le détail des fonctions est dans le [README anglais](README.md) et dans le
-manuel [`USER_MANUAL_FR.pdf`](USER_MANUAL_FR.pdf).
+manuel [`docs/manuel-fr.pdf`](docs/manuel-fr.pdf), ouvert aussi par *Aide > Manuel (PDF)*.
 
 ## Télécharger
 

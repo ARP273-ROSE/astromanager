@@ -213,7 +213,7 @@ def get_cosmic_stylesheet() -> str:
     QWidget {{
         background-color: {c['bg_dark']};
         color: {c['text_primary']};
-        font-family: "Segoe UI", "Ubuntu", "Cantarell", sans-serif;
+        font-family: "Source Sans 3", "Segoe UI", "Ubuntu", "Cantarell", sans-serif;
         font-size: 9pt;
     }}
 
@@ -672,6 +672,38 @@ def create_cosmic_cursor(size: int = 24) -> QCursor:
     painter.end()
 
     return QCursor(pixmap, 0, 0)
+
+
+#: palette complète passée au style figé du kit (interface_kit.py)
+COULEURS_KIT = {
+    'fenetre': COLORS['bg_dark'], 'texte': COLORS['text_primary'],
+    'base': COLORS['bg_input'], 'base_alt': COLORS['bg_medium'],
+    'bouton': COLORS['bg_lighter'], 'texte_bouton': COLORS['text_primary'],
+    'selection': COLORS['accent_cyan'], 'texte_selection': COLORS['bg_dark'],
+    'lien': COLORS['accent_cyan'], 'infobulle': COLORS['bg_medium'],
+    'texte_infobulle': COLORS['text_primary'], 'desactive': COLORS['text_disabled'],
+    'clair': COLORS['bg_lighter'], 'moyen': COLORS['border'], 'sombre': COLORS['bg_darkest'],
+}
+
+
+def apply_fixed_style(app: QApplication):
+    """Style FIGÉ, identique sur Windows, macOS et Linux et indépendant du
+    thème clair/sombre et des polices du système : Fusion, palette complète
+    (tous les rôles, états désactivés compris), police embarquée
+    (assets/polices), feuille de style cosmique. Sous Linux, toutes les
+    boîtes Ouvrir/Enregistrer/Dossier sont la boîte complète de Qt."""
+    import os
+    base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    try:
+        import interface_kit
+        interface_kit.appliquer_style(app, COULEURS_KIT,
+                                      polices=os.path.join(base, 'assets', 'polices'),
+                                      famille='Source Sans 3', taille=10,
+                                      feuille=get_cosmic_stylesheet())
+        interface_kit.installer_dialogues_fichiers()
+    except Exception:
+        app.setStyle('Fusion')
+        apply_cosmic_theme(app)
 
 
 def apply_cosmic_theme(app: QApplication):

@@ -69,3 +69,6 @@ installer_out/
 *-linux-*.tar.gz
 *-app-*.zip
 *.dmg
+
+# sources des manuels (docs/src) : suivies, contrairement aux autres .tex
+!docs/src/*.tex

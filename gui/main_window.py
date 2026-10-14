@@ -30,7 +30,7 @@ from PyQt6.QtGui import QFont, QTextCursor, QAction, QIcon, QDesktopServices
 
 from core.config import get_config
 from core.signals import signals
-from gui.theme import apply_cosmic_theme, create_cosmic_cursor, COLORS
+from gui.theme import apply_cosmic_theme, apply_fixed_style, create_cosmic_cursor, COLORS
 
 logger = logging.getLogger(__name__)
 
@@ -330,6 +330,11 @@ class AstroManagerWindow(QMainWindow):
         # ── Help Menu ──
         help_menu = menubar.addMenu(self._tr("&Help", "&Aide"))
 
+        manual_action = QAction(self._tr("📕 User &manual (PDF)", "📕 &Manuel (PDF)"), self)
+        manual_action.setShortcut("Shift+F1")
+        manual_action.triggered.connect(self._open_manual)
+        help_menu.addAction(manual_action)
+
         guide_action = QAction(self._tr("📖 User &Guide", "📖 &Guide Utilisateur"), self)
         guide_action.setShortcut("F1")
         guide_action.triggered.connect(self._show_user_guide)
@@ -588,6 +593,20 @@ class AstroManagerWindow(QMainWindow):
                          "Fait avec amour pour la communauté d'astrophotographie.")}</p>
             <p style="font-size: 8pt; color: #666;"><a href="https://github.com/ARP273-ROSE" style="color: #777; text-decoration: none;">☕</a></p>"""
         )
+
+    def _open_manual(self):
+        """Manuel PDF (docs/manuel-fr.pdf, docs/manuel-en.pdf) dans la langue
+        de l'interface, avec la visionneuse du système."""
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        try:
+            import interface_kit
+            if interface_kit.ouvrir_manuel([os.path.join(base, 'docs')], self.lang):
+                return
+        except Exception:
+            pass
+        QMessageBox.information(self, "AstroManager", self._tr(
+            "The PDF manual cannot be found in the program folder.",
+            "Le manuel PDF est introuvable dans le dossier du programme."))
 
     def _show_bug_dialog(self):
         """Signalement écrit (Aide > Signaler un problème), transmis au point
@@ -1705,8 +1724,9 @@ def create_application():
     if os.path.isfile(icon_path):
         app.setWindowIcon(QIcon(icon_path))
 
-    # Apply cosmic theme
-    apply_cosmic_theme(app)
+    # Apparence figée (Fusion, palette complète, police embarquée) et vrais
+    # explorateurs de fichiers sous Linux — kit commun, interface_kit.py
+    apply_fixed_style(app)
 
     return app
 

@@ -629,7 +629,8 @@ def _verifier_installation() -> int:
     os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
     modules = ['numpy', 'astropy.io.fits', 'xisf', 'matplotlib', 'PyQt6.QtWidgets',
                'core', 'core.config', 'core.database', 'gui.main_window',
-               'modules.compression', 'parsers', 'analyzers', 'reporting', 'updater']
+               'modules.compression', 'parsers', 'analyzers', 'reporting', 'updater',
+               'interface_kit']
     try:
         for nom in modules:
             __import__(nom)

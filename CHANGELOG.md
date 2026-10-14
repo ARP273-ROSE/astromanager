@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.5.0 — 2026-10-14
+
+### Added
+- **Fixed look**: Fusion style, complete cosmic palette (disabled states included) and
+  embedded Source Sans 3 font (`assets/polices`, OFL) — the interface no longer depends on
+  the system's light/dark theme or fonts (`gui/theme.py`, shared `interface_kit.py`).
+- **Full file browser** on Linux for every Open / Save / Choose-folder dialog: Qt's complete
+  dialog with the usual places in the sidebar, instead of the reduced desktop-portal one;
+  Windows and macOS keep their own (complete) dialogs.
+- **PDF manual** in French and English, house format, real screenshots, opened by
+  *Help > User manual (PDF)* (Shift+F1); sources in `docs/src/`, screenshots by
+  `docs/captures.py`, build by `docs/src/compiler.py`. It replaces `USER_MANUAL_*.pdf`, whose
+  installation, update and bug-report chapters described the former mechanisms.
+- **Icon**: one vector source, `assets/icon.svg`, rendered by `assets/make_logo.py` to PNG
+  16–1024, `.ico` (Windows) and `.icns` (macOS); also on the manual's cover and in *About*.
+- Tests: real start-up of the program, fixed style, manuals present.
+
 ## 1.4.0 — 2026-10-14
 
 ### Added

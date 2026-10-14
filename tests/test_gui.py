@@ -110,3 +110,35 @@ def test_check_en_ligne_de_commande():
                        env={**os.environ, 'QT_QPA_PLATFORM': 'offscreen'})
     assert r.returncode == 0, r.stdout + r.stderr
     assert 'OK' in r.stdout
+
+
+def test_le_programme_demarre_vraiment():
+    """Lance le vrai point d'entrée quelques secondes : tout le démarrage
+    (style figé, verrou, accord différé, vigie) doit tourner sans exception."""
+    import subprocess
+    try:
+        r = subprocess.run([sys.executable, '-B', str(RACINE / 'astromanager.py')],
+                           capture_output=True, text=True, timeout=12,
+                           env={**os.environ, 'HOME': _HOME, 'APPDATA': _HOME})
+        sortie = r.stdout + r.stderr
+        assert r.returncode == 0, sortie
+    except subprocess.TimeoutExpired as e:
+        sortie = (e.stdout or b'').decode() + (e.stderr or b'').decode()
+    assert 'Traceback' not in sortie, sortie
+
+
+def test_style_fige_et_police_embarquee():
+    from PyQt6.QtGui import QPalette
+    import interface_kit
+    from gui.theme import COULEURS_KIT, apply_fixed_style
+    interface_kit.appliquer_style(APP, COULEURS_KIT)          # sans feuille de style
+    assert APP.style().name().lower() == 'fusion'
+    apply_fixed_style(APP)                                   # le vrai, avec la feuille
+    assert APP.font().family() == 'Source Sans 3'
+    p = APP.palette()
+    assert p.color(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text).name() == '#4a5270'
+
+
+def test_manuels_pdf_presents():
+    for lg in ('fr', 'en'):
+        assert (RACINE / 'docs' / f'manuel-{lg}.pdf').stat().st_size > 100_000
