@@ -15,7 +15,7 @@ PyQt6>=6.2
 tqdm>=4.60
 requests>=2.25
 reportlab>=3.6
-xisf>=0.9
+xisf>=1.0.1
 
 # Compression codecs (recommended - enables zstd/lz4 compression)
 zstandard>=0.18
