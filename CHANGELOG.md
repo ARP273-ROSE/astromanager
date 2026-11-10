@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.5.2 — 2026-11-10
+
+### Fixed
+- **XISF files from PixInsight 1.9.6**: compressed XISF files written under revision 2 of the specification
+  (October 2026) are read: block split into 4 MiB subblocks, subblocks that do not compress stored as is. They
+  used to fail ("Zlib decompressed data exceeds…", zstd/lz4 errors).
+- The built-in XISF reader no longer misses an `<Image>` element that has no child element.
+- `xisf>=1.0.1` (first release of the library that reads subblocks).
+
 ## 1.5.1 — 2026-10-14
 
 ### Removed

@@ -274,30 +274,75 @@ def compress_data(data: bytes, codec: str, level: int = 6,
         raise ValueError(f"Unknown codec: {codec}")
 
 
-def decompress_data(data: bytes, codec: str, original_size: int,
-                    shuffle: bool = False, item_size: int = 2) -> bytes:
-    """Decompress bytes with the specified codec."""
-    if original_size > MAX_DECOMPRESSED_SIZE:
-        raise ValueError(f"Decompressed size {original_size} exceeds maximum allowed {MAX_DECOMPRESSED_SIZE}")
-
+def _decompress_one(data: bytes, codec: str, size: int) -> bytes:
+    """Decompress one block or subblock; it must yield exactly `size` bytes."""
     if codec == 'zlib':
         dobj = zlib.decompressobj()
-        raw = dobj.decompress(data, original_size + 1)
+        raw = dobj.decompress(data, size + 1)
         if dobj.unconsumed_tail or dobj.unused_data:
-            raise ValueError(f"Zlib decompressed data exceeds declared original_size {original_size}")
+            raise ValueError(f"Zlib decompressed data exceeds declared original_size {size}")
     elif codec in ('zstd',):
         if not HAS_ZSTD:
             raise RuntimeError("zstandard package not installed")
         dctx = zstd.ZstdDecompressor()
-        raw = dctx.decompress(data, max_output_size=original_size)
+        raw = dctx.decompress(data, max_output_size=size)
     elif codec in ('lz4', 'lz4_hc'):
         if not HAS_LZ4:
             raise RuntimeError("lz4 package not installed")
-        raw = lz4.block.decompress(data, uncompressed_size=original_size)
-    elif codec == 'none':
-        raw = data
+        raw = lz4.block.decompress(data, uncompressed_size=size)
     else:
         raise ValueError(f"Unknown codec: {codec}")
+    if len(raw) != size:
+        raise ValueError(f"Decompressed size mismatch: expected {size}, got {len(raw)}")
+    return raw
+
+
+def decompress_data(data: bytes, codec: str, original_size: int,
+                    shuffle: bool = False, item_size: int = 2,
+                    subblocks: str = None) -> bytes:
+    """Decompress bytes with the specified codec.
+
+    XISF 1.0 revision 2 (October 2026, written by PixInsight >= 1.9.6): a
+    compressed block may be split into subblocks, attribute
+    subblocks="c1,u1:c2,u2:..."; a subblock with c == u is stored
+    uncompressed (spec section 10.6.1). Byte shuffling applies to the whole
+    block, after reassembly.
+    """
+    if original_size > MAX_DECOMPRESSED_SIZE:
+        raise ValueError(f"Decompressed size {original_size} exceeds maximum allowed {MAX_DECOMPRESSED_SIZE}")
+
+    if codec == 'none':
+        raw = data
+    else:
+        if not subblocks:
+            parts = [(len(data), original_size)]
+        else:
+            try:
+                parts = [tuple(int(v) for v in p.split(',')) for p in subblocks.strip().split(':')]
+            except ValueError:
+                raise ValueError(f"Invalid subblocks attribute: {subblocks!r}")
+            if any(len(p) != 2 for p in parts) or sum(c for c, _ in parts) != len(data) \
+                    or sum(u for _, u in parts) != original_size:
+                raise ValueError(f"subblocks {subblocks!r} inconsistent with block/size")
+        pieces = []
+        pos = 0
+        for c, u in parts:
+            chunk = data[pos:pos + c]
+            pos += c
+            if c == u:
+                # Uncompressed subblock (rev. 2). Older encoders could emit a
+                # compressed subblock of exactly u bytes: for zlib/zstd, try
+                # decompressing first.
+                piece = chunk
+                if codec in ('zlib', 'zstd'):
+                    try:
+                        piece = _decompress_one(chunk, codec, u)
+                    except Exception:
+                        piece = chunk
+                pieces.append(piece)
+            else:
+                pieces.append(_decompress_one(chunk, codec, u))
+        raw = pieces[0] if len(pieces) == 1 else b''.join(pieces)
 
     if len(raw) != original_size:
         raise ValueError(f"Decompressed size mismatch: expected {original_size}, got {len(raw)}")
@@ -609,7 +654,9 @@ class XISFReader:
 
             root = SafeET.fromstring(xml_string)
             ns = {'xisf': 'http://www.pixinsight.com/xisf'}
-            image = root.find('xisf:Image', ns) or root.find('Image')
+            image = root.find('xisf:Image', ns)
+            if image is None:  # an Element without children is falsy: never use `or`
+                image = root.find('Image')
             if image is None:
                 return {}
 
@@ -667,7 +714,9 @@ class XISFReader:
 
             root = SafeET.fromstring(xml_string)
             ns = {'xisf': 'http://www.pixinsight.com/xisf'}
-            image = root.find('xisf:Image', ns) or root.find('Image')
+            image = root.find('xisf:Image', ns)
+            if image is None:  # an Element without children is falsy: never use `or`
+                image = root.find('Image')
             if image is None:
                 raise ValueError("No <Image> element in XISF")
 
@@ -689,6 +738,7 @@ class XISFReader:
 
             # Compression
             compression = image.get('compression', '')
+            subblocks = image.get('subblocks')  # XISF rev. 2 (PixInsight >= 1.9.6)
             uses_shuffle = '+sh' in compression or 'byte-shuffling' in compression
             codec = 'none'
             if 'zlib' in compression:
@@ -723,7 +773,7 @@ class XISFReader:
 
         # Decompress
         raw_data = decompress_data(raw_read, codec, uncompressed_size,
-                                   uses_shuffle, item_size)
+                                   uses_shuffle, item_size, subblocks)
 
         # Convert to numpy array
         data = np.frombuffer(raw_data, dtype=dtype)
@@ -1161,7 +1211,9 @@ def read_xisf_compression_codec(filepath) -> str:
 
         root = SafeET.fromstring(xml_string)
         ns = {'xisf': 'http://www.pixinsight.com/xisf'}
-        image = root.find('xisf:Image', ns) or root.find('Image')
+        image = root.find('xisf:Image', ns)
+        if image is None:  # an Element without children is falsy: never use `or`
+            image = root.find('Image')
         if image is None:
             return 'none'
 
