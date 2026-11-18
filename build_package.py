@@ -15,6 +15,7 @@ Resultat : dist/<NomApp>/ contenant
     python/     interpreteur + dependances
     app/        le code de l'application
     bin/        binaires supplementaires eventuels (ffmpeg...)
+    outils/     outils tiers embarques (kit.json « outils », voir outils_kit.py)
     <NomApp>.bat et Diagnostic.bat
 
 Usage :
@@ -54,7 +55,11 @@ CACHE = ROOT / '.build_cache'
 PY_VERSION = '3.12.10'
 PY_EMBED_URL = (f'https://www.python.org/ftp/python/{PY_VERSION}/'
                 f'python-{PY_VERSION}-embed-amd64.zip')
-GET_PIP_URL = 'https://bootstrap.pypa.io/get-pip.py'
+# pip pose depuis sa roue : le get-pip.py actuel refuse de s'installer sous Windows
+# (« To modify pip, please run… », 03/11/2026). Roue pure Python, simple archive.
+PIP_VERSION = '25.2'
+PIP_WHEEL_URL = (f'https://files.pythonhosted.org/packages/py3/p/pip/'
+                 f'pip-{PIP_VERSION}-py3-none-any.whl')
 
 # Ce qui entre dans le paquet est decrit explicitement plutot que copie en
 # bloc : un depot contient aussi des scripts de maintenance, des rapports et
@@ -140,10 +145,13 @@ def step_python():
         log(f'{pth.name} ajuste (site actif, ../app dans le chemin)')
 
     exe = py_dir / 'python.exe'
-    get_pip = fetch(GET_PIP_URL, CACHE / 'get-pip.py')
+    roue = fetch(PIP_WHEEL_URL, CACHE / f'pip-{PIP_VERSION}.whl')
     log('installation de pip')
-    subprocess.run([str(exe), str(get_pip), '--no-warn-script-location', '-q'],
-                   check=True)
+    site = py_dir / 'Lib' / 'site-packages'
+    site.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(roue) as z:
+        z.extractall(site)
+    subprocess.run([str(exe), '-m', 'pip', '--version'], check=True)
 
     # setuptools et wheel ne sont pas fournis par la distribution embeddable,
     # et get-pip n'installe que pip. Des qu'une dependance n'a pas de roue
@@ -203,7 +211,16 @@ def step_app():
     # Copies selectives : un dossier de donnees contient souvent bien plus que
     # ce qu'il faut livrer. Celui des sons de ce projet pese plusieurs
     # gigaoctets, dont seule une poignee de fichiers sert a l'application.
+    # « systemes » (facultatif) : la regle ne vaut que pour ces systemes
+    # (« windows », « macos », « linux », « linux-arm64 »...) — les binaires
+    # d'un moteur exporte pour chaque systeme, par exemple. « decompresser » :
+    # une archive .zip retenue est deployee a sa place au lieu d'etre copiee
+    # (l'application macOS d'un moteur, que l'artefact transporte zippee).
     for regle in COPIES:
+        systemes = regle.get('systemes') or []
+        if systemes and not any(s in ('windows', 'windows-x86_64') for s in systemes):
+            log(f"{regle['de']} : regle reservee a {', '.join(systemes)}")
+            continue
         source = ROOT / regle['de']
         cible = app / regle.get('vers', regle['de'])
         retenus = 0
@@ -213,7 +230,15 @@ def step_app():
                     continue
                 destination = cible / fichier.relative_to(source)
                 destination.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(fichier, destination)
+                if regle.get('decompresser') and fichier.suffix.lower() == '.zip':
+                    with zipfile.ZipFile(fichier) as z:
+                        for membre in z.namelist():
+                            dest = (destination.parent / membre).resolve()
+                            if not str(dest).startswith(str(destination.parent.resolve())):
+                                raise RuntimeError(f'Archive suspecte : {membre}')
+                        z.extractall(destination.parent)
+                else:
+                    shutil.copy2(fichier, destination)
                 retenus += 1
         log(f"{regle['de']} : {retenus} fichier(s) retenu(s)")
 
@@ -253,15 +278,31 @@ def step_binaires():
                     log(f'{base} extrait')
 
 
+def step_outils():
+    """Outils tiers embarques (kit.json « outils ») : Tesseract, Tectonic...
+    poses dans outils/<nom>/ a cote de python/ et app/, essayes, caches
+    pre-remplis. Le detail vit dans outils_kit.py, commun aux trois systemes."""
+    import outils_kit
+    outils_kit.poser_tous(KIT, PKG, CACHE, ROOT, app=PKG / 'app', log=log)
+
+
+def qt_gardes() -> tuple:
+    """kit.json « qt_garder » : modules Qt que l'elagage doit epargner, par
+    fragment de nom (["Pdf"] garde Qt6Pdf, QtPdf et QtPdfWidgets — les vignettes
+    de pages d'un outil PDF). Plus fin que « qt_elaguer » a false, qui garde tout."""
+    return tuple(KIT.get('qt_garder') or ())
+
+
 def step_prune():
     """Retire les modules Qt que l'application n'utilise pas."""
     sp = PKG / 'python' / 'Lib' / 'site-packages'
     qt = sp / 'PyQt6' / 'Qt6'
     freed = 0
+    gardes = qt_gardes()
 
     def drop(path):
         nonlocal freed
-        if not path.exists():
+        if not path.exists() or any(g in path.name for g in gardes):
             return
         if path.is_dir():
             freed += sum(f.stat().st_size for f in path.rglob('*') if f.is_file())
@@ -311,6 +352,33 @@ def step_prune():
     log(f'elagage : {freed / 1e6:.0f} Mo retires')
 
 
+# Ce que le Qt du paquet doit garder (repris de Coupole 0.1.8 / 0.7.0) : le
+# greffon de la plateforme (dialogues natifs de Windows) et les traductions de
+# Qt (boutons standard, menus des champs de texte, dialogue de repli en
+# francais). kit.json « qt_attendus » ajoute ce que l'application exige en
+# plus, par systeme : {"windows": ["plugins/imageformats/qwebp.dll"], ...}.
+# Une suppression de trop dans l'elagage ne se voyait sinon que chez
+# l'utilisateur (dialogue en anglais, image WebP vide).
+QT_ATTENDUS = ('plugins/platforms/qwindows.dll', 'translations/qtbase_fr.qm',
+               'translations/qt_fr.qm')
+
+
+def qt_attendus() -> tuple:
+    return QT_ATTENDUS + tuple((KIT.get('qt_attendus') or {}).get('windows') or ())
+
+
+def controler_qt(pkg=None) -> list:
+    qt = Path(pkg or PKG) / 'python' / 'Lib' / 'site-packages' / 'PyQt6' / 'Qt6'
+    return [rel for rel in qt_attendus() if not (qt / rel).exists()]
+
+
+def step_controler_qt():
+    manque = controler_qt()
+    if manque:
+        raise RuntimeError('Qt incomplet dans le paquet : ' + ', '.join(manque))
+    log('Qt : greffon Windows, traductions et greffons attendus presents')
+
+
 def step_launcher():
     """Lanceur sans console, plus un lanceur de diagnostic qui la montre."""
     pyw = PKG / 'python' / 'pythonw.exe'
@@ -352,6 +420,7 @@ def main():
     ap.add_argument('--out', help="dossier de sortie (doit etre un disque local)")
     ap.add_argument('--no-prune', action='store_true')
     ap.add_argument('--skip-binaires', action='store_true')
+    ap.add_argument('--skip-outils', action='store_true')
     args = ap.parse_args()
 
     if args.out:
@@ -381,7 +450,15 @@ def main():
         ('Dependances', lambda: step_deps(globals()['_exe'])),
         ('Application', step_app),
         ('Binaires', (lambda: log('ignore')) if args.skip_binaires else step_binaires),
-        ('Elagage', (lambda: log('ignore')) if args.no_prune else step_prune),
+        ('Outils embarques', (lambda: log('ignore')) if args.skip_outils else step_outils),
+        # kit.json « qt_elaguer » : false pour une application qui se sert de
+        # modules Qt que l'elagage retire (QtWebEngine et ses dependances
+        # Qml/Quick/WebChannel/Positioning : une liseuse EPUB, par exemple).
+        # Sans cela le paquet Windows perdait la fonction en silence, alors
+        # que les paquets macOS et Linux, jamais elagues, la gardaient.
+        ('Elagage', (lambda: log('ignore'))
+         if args.no_prune or KIT.get('qt_elaguer', True) is False else step_prune),
+        ('Controle de Qt', step_controler_qt),
         ('Lanceurs', step_launcher),
         ('Pre-compilation', step_precompile),
     ]

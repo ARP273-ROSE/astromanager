@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.5.3 — 2026-11-18
+
+### Security
+- **Signed updates**: each release publishes a manifest (version number and SHA-256 of every
+  archive) signed with an Ed25519 key that is not on GitHub; the application installs an update
+  only if its archive is listed in it. A stolen GitHub access can no longer push code to installed
+  copies.
+- **Common kit brought to its current level**: SHA256SUMS and archive checks before extraction,
+  address checked after redirects, Linux distribution certificates, up-to-date problem reports.
+
 ## 1.5.2 — 2026-11-10
 
 ### Fixed

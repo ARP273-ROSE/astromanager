@@ -8,6 +8,7 @@ La structure est LA MEME que celle du paquet Windows produit par
     <NomApp>/
         python/     un CPython autonome
         app/        le code de l'application
+        outils/     outils tiers embarques (kit.json « outils », outils_kit.py)
         <NomApp>.sh (ou le bundle .app sous macOS)
 
 C'est ce qui permet a `updater.py` de fonctionner a l'identique sur les trois
@@ -97,6 +98,38 @@ DESCRIPTION_EN = KIT.get('description_en') or DESCRIPTION_FR
 CATEGORIES = KIT.get('categories_linux') or 'Utility;'
 
 
+def regle_pour_ce_systeme(regle) -> bool:
+    """Vrai si la regle de copie vaut pour le systeme construit."""
+    systemes = regle.get('systemes') or []
+    if not systemes:
+        return True
+    return plateforme() in systemes or f'{plateforme()}-{architecture()}' in systemes
+
+
+def deployer_zip(archive: Path, dossier: Path):
+    """Deploie une archive .zip en gardant les droits d'execution et les
+    liens symboliques (zipfile seul les perd : une application macOS ou un
+    moteur Linux ressortaient non executables)."""
+    dossier.mkdir(parents=True, exist_ok=True)
+    base = dossier.resolve()
+    with zipfile.ZipFile(archive) as z:
+        for info in z.infolist():
+            dest = (dossier / info.filename).resolve()
+            if not str(dest).startswith(str(base)):
+                raise RuntimeError(f'Archive suspecte : {info.filename}')
+            mode = info.external_attr >> 16
+            if stat.S_ISLNK(mode):
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                if dest.exists() or dest.is_symlink():
+                    dest.unlink()
+                os.symlink(z.read(info).decode('utf-8'), dest)
+                continue
+            z.extract(info, dossier)
+            if mode & 0o777 and not info.is_dir():
+                dest.chmod(mode & 0o777)
+    log(f'archive deployee : {archive.name}')
+
+
 def fetch(url, dest):
     if dest.exists() and dest.stat().st_size > 0:
         log(f'deja en cache : {dest.name}')
@@ -111,7 +144,10 @@ def fetch(url, dest):
 def step_python():
     """Pose un CPython autonome dans <PKG>/python."""
     cible = cible_python()
-    nom = f'cpython-{PY_VERSION}+{PY_BUILD}-{cible}-install_only.tar.gz'
+    # Variante « stripped » : sans symboles de debogage. Le binaire python3.12
+    # de Linux pesait 102 Mo (39 Mo compresses), et `strip` ne peut pas s'y
+    # appliquer sans le casser (« undefined symbol ») — seule libpython l'est.
+    nom = f'cpython-{PY_VERSION}+{PY_BUILD}-{cible}-install_only_stripped.tar.gz'
     url = (f'https://github.com/astral-sh/python-build-standalone/releases/'
            f'download/{PY_BUILD}/{nom}')
     archive = fetch(url, CACHE / nom)
@@ -180,6 +216,29 @@ def step_app():
                             ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
         else:
             shutil.copy2(src, app / src.name)
+    # Copies selectives (kit.json « copies »), comme build_package.py sous
+    # Windows : seuls les fichiers retenus par les motifs, a la meme place
+    # relative. Sans elles, ce que l'application ouvre depuis un sous-dossier
+    # (le manuel dans docs/, par exemple) manquait aux paquets macOS et Linux.
+    # « systemes » : regle reservee a certains systemes (« linux »,
+    # « linux-arm64 », « macos »...) ; « decompresser » : une archive .zip
+    # retenue est deployee a sa place (voir build_package.py).
+    for regle in KIT.get('copies', []):
+        if not regle_pour_ce_systeme(regle):
+            continue
+        source = ROOT / regle['de']
+        cible = app / regle.get('vers', regle['de'])
+        for motif in regle.get('motifs', ['**/*']):
+            for fichier in source.glob(motif):
+                if fichier.is_file():
+                    destination = cible / fichier.relative_to(source)
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    if regle.get('decompresser') and fichier.suffix.lower() == '.zip':
+                        deployer_zip(fichier, destination.parent)
+                    else:
+                        shutil.copy2(fichier, destination)
+                        if regle.get('executable'):
+                            destination.chmod(destination.stat().st_mode | 0o755)
     # kit.json dit a updater.py ou chercher les versions : sans lui, le depot
     # de distribution est vide et aucune mise a jour n'est jamais trouvee.
     # build_package.py (Windows) le copiait deja ; ici, il manquait.
@@ -187,18 +246,57 @@ def step_app():
     log(f'application copiee ({sum(1 for _ in app.rglob("*"))} entrees)')
 
 
+def step_outils():
+    """Outils tiers embarques (kit.json « outils ») : Tesseract, Tectonic...
+    poses dans outils/<nom>/ a cote de python/ et app/ (la mise a jour, qui ne
+    remplace que app/, n'y touche pas), essayes, caches pre-remplis. Le detail
+    vit dans outils_kit.py, commun aux trois systemes."""
+    import outils_kit
+    outils_kit.poser_tous(KIT, PKG, CACHE, ROOT, app=PKG / 'app', log=log)
+
+
+# Dossier reel du lanceur, liens symboliques suivis (~/.local/bin/app ->
+# .../App.sh, et lien de lien) : `dirname "$0"` seul donnait le dossier du
+# LIEN, et l'application ne trouvait plus python/ ni app/. Sans `readlink -f`,
+# absent de macOS avant 12.3 : `readlink` simple, en boucle (Coupole, Tutti).
+SUIVRE_LIENS = (
+    'CIBLE="$0"\n'
+    'while [ -L "$CIBLE" ]; do\n'
+    '    LIEN=$(readlink "$CIBLE")\n'
+    '    case "$LIEN" in\n'
+    '        /*) CIBLE="$LIEN" ;;\n'
+    '        *) CIBLE="$(dirname "$CIBLE")/$LIEN" ;;\n'
+    '    esac\n'
+    'done\n')
+
+
+def texte_lanceur(relatif: str = '.') -> str:
+    """Le lanceur shell ; `relatif` : python/ et app/ vus du dossier du lanceur."""
+    ici = ('$(cd "$(dirname "$CIBLE")" && pwd)' if relatif == '.'
+           else '$(cd "$(dirname "$CIBLE")/%s" && pwd)' % relatif)
+    return ('#!/bin/sh\n'
+            '# Lanceur : tout est relatif au dossier du paquet, rien n\'est\n'
+            '# installe dans le systeme.\n'
+            + SUIVRE_LIENS +
+            f'ICI={ici}\n'
+            f'exec "$ICI/python/bin/python3" "$ICI/app/{POINT_ENTREE}" "$@"\n')
+
+
 def step_lanceur():
     """Un script shell, et sous macOS le bundle .app qui va autour."""
     sh = PKG / f'{NOM}.sh'
-    sh.write_text(
-        '#!/bin/sh\n'
-        '# Lanceur : tout est relatif au dossier du paquet, rien n\'est\n'
-        '# installe dans le systeme.\n'
-        'ICI=$(cd "$(dirname "$0")" && pwd)\n'
-        f'exec "$ICI/python/bin/python3" "$ICI/app/{POINT_ENTREE}" "$@"\n',
-        encoding='utf-8')
+    sh.write_text(texte_lanceur(), encoding='utf-8')
     sh.chmod(sh.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
     log(f'lanceur : {sh.name}')
+    if KIT.get('passerelle_pyinstaller') and plateforme() == 'linux':
+        # L'ancien paquet Linux PyInstaller en dossier se mettait a jour en
+        # remplacant son dossier par celui de l'archive .tar.gz, a condition
+        # d'y trouver un executable <Nom> (sans extension), qu'il relancait.
+        # Ce second lanceur fait passer ces installations au paquet du kit.
+        nu = PKG / NOM
+        nu.write_text(texte_lanceur(), encoding='utf-8')
+        nu.chmod(0o755)
+        log(f'lanceur des anciens paquets : {nu.name}')
 
     if plateforme() == 'macos':
         # Un bundle .app : c'est ce qu'un utilisateur macOS attend de pouvoir
@@ -233,14 +331,11 @@ def step_lanceur():
             '  <key>LSMinimumSystemVersion</key><string>11.0</string>\n'
             '</dict></plist>\n', encoding='utf-8')
         lanceur = macos / NOM
-        lanceur.write_text(
-            '#!/bin/sh\n'
-            'ICI=$(cd "$(dirname "$0")/../Resources" && pwd)\n'
-            f'exec "$ICI/python/bin/python3" "$ICI/app/{POINT_ENTREE}" "$@"\n',
-            encoding='utf-8')
+        lanceur.write_text(texte_lanceur('../Resources'), encoding='utf-8')
         lanceur.chmod(0o755)
-        for entree in ('python', 'app'):
-            shutil.move(str(PKG / entree), str(resources / entree))
+        for entree in ('python', 'app', 'outils'):
+            if (PKG / entree).exists():
+                shutil.move(str(PKG / entree), str(resources / entree))
         shutil.rmtree(PKG, ignore_errors=True)
         log(f'bundle : {bundle.name}')
 
@@ -284,8 +379,10 @@ echo "Installation dans / Installing into: $CIBLE"
 mkdir -p "$CIBLE"
 # Les donnees de l'utilisateur (reglages, rapports) vivent ailleurs, dans
 # $DONNEES/__NOM__ : elles ne sont jamais touchees ici.
-rm -rf "$CIBLE/python" "$CIBLE/app"
+rm -rf "$CIBLE/python" "$CIBLE/app" "$CIBLE/outils"
 cp -R "$ICI/python" "$ICI/app" "$ICI/$NOM_APP.sh" "$CIBLE/"
+# outils tiers embarques (kit.json « outils »), s'il y en a
+[ -d "$ICI/outils" ] && cp -R "$ICI/outils" "$CIBLE/"
 chmod +x "$CIBLE/$NOM_APP.sh" "$CIBLE/python/bin/"python3*
 APPS="$DONNEES/applications"
 mkdir -p "$APPS"
@@ -293,9 +390,19 @@ sed -e "s|__ICI__|$CIBLE|g" "$ICI/$TECH.desktop" > "$APPS/$TECH.desktop"
 chmod +x "$APPS/$TECH.desktop"
 command -v update-desktop-database >/dev/null 2>&1 && \
     update-desktop-database "$APPS" >/dev/null 2>&1 || true
-echo "Termine. Lancez « $NOM_APP » depuis le menu des applications, ou :"
-echo "Done. Start \"$NOM_APP\" from the applications menu, or run:"
-echo "  $CIBLE/$NOM_APP.sh"
+# commande « __TECH__ » dans un terminal : lien vers le lanceur, qui suit les
+# liens symboliques jusqu'au paquet (repris de Coupole)
+BIN="$HOME/.local/bin"
+mkdir -p "$BIN"
+ln -sf "$CIBLE/$NOM_APP.sh" "$BIN/$TECH"
+echo "Termine. Lancez « $NOM_APP » depuis le menu des applications, ou : $TECH"
+echo "Done. Start \"$NOM_APP\" from the applications menu, or run: $TECH"
+case ":$PATH:" in
+  *":$BIN:"*) ;;
+  *) echo "Attention : $BIN n'est pas dans votre PATH (ajoutez a ~/.profile :"
+     echo "  export PATH=\"\$HOME/.local/bin:\$PATH\"  ) ; en attendant : $BIN/$TECH"
+     echo "Note: $BIN is not in your PATH (add the line above to ~/.profile); meanwhile: $BIN/$TECH" ;;
+esac
 """
 
 
@@ -343,6 +450,74 @@ def racine_paquet() -> Path:
     return bundle if bundle.exists() else PKG
 
 
+#: Modules Qt retires, comme dans build_package.py (paquet Windows) : une
+#: application QtWidgets ne charge ni QML, ni Quick, ni WebEngine... kit.json
+#: « qt_elaguer » a false les garde tous (QtWebEngine d'une liseuse).
+QT_ELAGUES = (
+    'Qt6Quick', 'Qt6Qml', 'Qt6WebEngine', 'Qt6WebView', 'Qt6WebSockets',
+    'Qt6WebChannel', 'Qt6Charts', 'Qt6DataVisualization', 'Qt6Designer',
+    'Qt6Help', 'Qt6Test', 'Qt6Bluetooth', 'Qt6Nfc', 'Qt6SerialPort',
+    'Qt6SerialBus', 'Qt6Sensors', 'Qt63D', 'Qt6Pdf', 'Qt6Sql',
+    'Qt6RemoteObjects', 'Qt6Scxml', 'Qt6StateMachine', 'Qt6SpatialAudio',
+    'Qt6TextToSpeech', 'Qt6VirtualKeyboard', 'Qt6Location', 'Qt6Positioning',
+    'Qt6ShaderTools', 'Qt6LabsAnimation', 'Qt6Quick3D',
+)
+QT_GREFFONS_ELAGUES = (
+    'sqldrivers', 'sceneparsers', 'assetimporters', 'renderers', 'qmlls',
+    'qmllint', 'geometryloaders', 'position', 'webview', 'designer',
+    'texttospeech', 'virtualkeyboard', 'sensors', 'canbus', 'help',
+)
+PYQT_ELAGUES = (
+    'QtQml', 'QtQuick', 'QtQuick3D', 'QtQuickWidgets', 'QtWebEngineCore',
+    'QtWebEngineWidgets', 'QtWebEngineQuick', 'QtWebChannel', 'QtWebSockets',
+    'QtCharts', 'QtDataVisualization', 'QtDesigner', 'QtHelp', 'QtTest',
+    'QtBluetooth', 'QtNfc', 'QtSerialPort', 'QtSensors', 'Qt3DCore',
+    'Qt3DRender', 'Qt3DInput', 'Qt3DLogic', 'Qt3DAnimation', 'Qt3DExtras',
+    'QtPdf', 'QtPdfWidgets', 'QtSql', 'QtRemoteObjects', 'QtScxml',
+    'QtStateMachine', 'QtSpatialAudio', 'QtTextToSpeech', 'QtPositioning',
+    'QtLocation', 'QtMultimediaWidgets',
+)
+
+
+def _elaguer_qt(site: Path):
+    """Le meme elagage que sous Windows : Linux (libQt6Quick.so.6) et macOS
+    (QtQuick.framework)."""
+    pyqt = site / 'PyQt6'
+    qt = pyqt / 'Qt6'
+    if not qt.is_dir():
+        return
+    # kit.json « qt_garder » : fragments de nom epargnes (["Pdf"] garde
+    # libQt6Pdf, QtPdf.framework et le module PyQt6.QtPdf), comme sous Windows.
+    gardes = tuple(KIT.get('qt_garder') or ())
+    prefixes = tuple(p for p in QT_ELAGUES + tuple(p.replace('Qt6', 'Qt', 1) for p in QT_ELAGUES)
+                     if not any(g in p for g in gardes))
+    for d in (qt / 'lib', qt / 'bin', qt / 'libexec'):
+        if not d.is_dir():
+            continue
+        for f in list(d.iterdir()):
+            nom = f.name[3:] if f.name.startswith('lib') else f.name
+            if any(nom.startswith(p) for p in prefixes):
+                if f.is_dir() and not f.is_symlink():
+                    shutil.rmtree(f, ignore_errors=True)
+                else:
+                    f.unlink(missing_ok=True)
+    for nom in QT_GREFFONS_ELAGUES:
+        shutil.rmtree(qt / 'plugins' / nom, ignore_errors=True)
+    shutil.rmtree(qt / 'qml', ignore_errors=True)
+    for nom in PYQT_ELAGUES:
+        if any(g in nom for g in gardes):
+            continue
+        for f in pyqt.glob(nom + '.*'):
+            f.unlink(missing_ok=True)
+    tr = qt / 'translations'
+    if tr.is_dir():
+        for f in tr.iterdir():
+            if f.is_file() and not any(tag in f.name for tag in ('_fr', '_en')):
+                f.unlink(missing_ok=True)
+    shutil.rmtree(pyqt / 'bindings', ignore_errors=True)
+    shutil.rmtree(qt / 'include', ignore_errors=True)
+
+
 def step_elaguer():
     """Retire ce qui ne sert pas a l'execution."""
     base = racine_paquet()
@@ -357,6 +532,12 @@ def step_elaguer():
         for nom in ('test', 'idlelib', 'tkinter', 'turtledemo', 'lib2to3',
                     'ensurepip'):
             shutil.rmtree(stdlib / nom, ignore_errors=True)
+        site = stdlib / 'site-packages'
+        if KIT.get('qt_elaguer', True) is not False:
+            _elaguer_qt(site)
+        # pip n'a plus rien a installer une fois le paquet construit
+        for f in list(site.glob('pip')) + list(site.glob('pip-*.dist-info')):
+            shutil.rmtree(f, ignore_errors=True)
         # Tests de numpy : inutiles a l'execution, comme sous Windows.
         numpy = stdlib / 'site-packages' / 'numpy'
         if numpy.is_dir():
@@ -365,6 +546,14 @@ def step_elaguer():
                     shutil.rmtree(chemin, ignore_errors=True)
     for chemin in list(base.rglob('*.pyc')):
         chemin.unlink(missing_ok=True)
+    # Tcl/Tk (tkinter est deja retire) et lanceurs pip
+    for motif in ('lib/tcl*', 'lib/tk*', 'lib/libtcl*', 'lib/libtk*', 'lib/itcl*',
+                  'lib/thread*', 'bin/pip*', 'bin/idle*', 'bin/2to3*'):
+        for f in (base / 'python').glob(motif):
+            if f.is_dir() and not f.is_symlink():
+                shutil.rmtree(f, ignore_errors=True)
+            else:
+                f.unlink(missing_ok=True)
     # Sous Linux, libpython de python-build-standalone garde ses symboles de
     # debogage : 219 Mo, dont l'essentiel ne sert qu'a un debogueur. On ne
     # retire QUE ceux-la (--strip-debug), jamais la table des symboles
@@ -377,6 +566,38 @@ def step_elaguer():
     log(f'elagage : {avant/1e6:.0f} Mo -> {apres/1e6:.0f} Mo')
 
 
+# Ce que le Qt du paquet doit garder (repris de Coupole 0.1.8 / 0.7.0) : le
+# greffon de la plateforme et les traductions de Qt en francais (boutons
+# standard, dialogue de fichiers de Qt). kit.json « qt_attendus » ajoute ce que
+# l'application exige en plus, par systeme ({"linux": [...], "macos": [...]}) :
+# greffon WebP, portail XDG... Une suppression de trop ne se voyait sinon que
+# chez l'utilisateur.
+QT_ATTENDUS = {
+    'linux': ('plugins/platforms/libqxcb.so', 'translations/qtbase_fr.qm', 'translations/qt_fr.qm'),
+    'macos': ('plugins/platforms/libqcocoa.dylib', 'translations/qtbase_fr.qm', 'translations/qt_fr.qm'),
+}
+
+
+def qt_attendus(systeme: str | None = None) -> tuple:
+    systeme = systeme or plateforme()
+    return QT_ATTENDUS.get(systeme, ()) + tuple((KIT.get('qt_attendus') or {}).get(systeme) or ())
+
+
+def controler_qt(base: Path, systeme: str | None = None) -> list:
+    """Fichiers Qt attendus absents du paquet (liste vide : tout y est)."""
+    dossiers = [q / 'Qt6' for q in base.rglob('PyQt6') if q.is_dir() and q.parent.name == 'site-packages']
+    if not dossiers:
+        return ['PyQt6/Qt6']
+    return [rel for rel in qt_attendus(systeme) if not any((d / rel).exists() for d in dossiers)]
+
+
+def step_controler_qt():
+    manque = controler_qt(racine_paquet())
+    if manque:
+        raise RuntimeError('Qt incomplet dans le paquet : ' + ', '.join(manque))
+    log('Qt : greffon de la plateforme, traductions et greffons attendus presents')
+
+
 def step_verifier(version):
     """L'application doit au moins s'importer avec l'interpreteur embarque."""
     base = racine_paquet()
@@ -385,7 +606,15 @@ def step_verifier(version):
     if not modules:
         return
     code = 'import sys; sys.path.insert(0, "app")\n' + \
-           '\n'.join(f'import {m}' for m in modules) + '\nprint("ok")'
+           '\n'.join(f'import {m}' for m in modules) + '\n'
+    # kit.json « essai_embarquees » (« module:fonction », facultatif) : des
+    # bibliotheques facultatives embarquees, essayees pour de vrai (un import
+    # qui reussit ne prouve pas qu'une extension compilee fonctionne)
+    essai = KIT.get('essai_embarquees')
+    if essai:
+        module, _, fonction = essai.partition(':')
+        code += f'import {module}; print({module}.{fonction}())\n'
+    code += 'print("ok")'
     # -B : sans cela la verification recree des .pyc dans app/ — apres
     # l'elagage, qui les avait retires — et ils partent dans le paquet.
     r = subprocess.run([str(exe), '-B', '-c', code], cwd=base,
@@ -393,7 +622,7 @@ def step_verifier(version):
                        env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'})
     if r.returncode != 0:
         raise RuntimeError('Le paquet ne s\'importe pas :\n' + r.stderr[-2000:])
-    log('verification d\'import : ok')
+    log('verification d\'import : ok ' + r.stdout.strip().replace('\n', ' '))
     # La mise a jour doit savoir ou chercher, et reconnaitre le paquet.
     controle = ('import sys; sys.path.insert(0, "app"); import updater; '
                 'assert updater.REPO, "depot de distribution vide"; '
@@ -414,12 +643,18 @@ def step_verifier(version):
 
 def step_archive(version):
     """L'archive applicative — le contenu de app/, ce que l'updater telecharge."""
-    nom = f'{NOM_TECHNIQUE}-app-{version}.zip'
+    # kit.json « archive_par_systeme » : app/ embarque des binaires propres a
+    # ce systeme, l'archive porte son nom (prefixe distinct, cf. updater.py)
+    if KIT.get('archive_par_systeme'):
+        nom = f'{NOM_TECHNIQUE}-maj-{plateforme()}-{architecture()}-{version}.zip'
+    else:
+        nom = f'{NOM_TECHNIQUE}-app-{version}.zip'
     sortie = ROOT / nom
     if sortie.exists():
         sortie.unlink()
     app = racine_paquet() / 'app'
-    exclus = set(KIT.get('exclus_de_la_maj', []) or [])
+    # ce qui appartient a l'utilisateur ne part jamais dans l'archive
+    exclus = set(KIT.get('exclus_de_la_maj', []) or []) | set(KIT.get('fichiers_proteges') or [])
     with zipfile.ZipFile(sortie, 'w', zipfile.ZIP_DEFLATED) as z:
         for f in sorted(app.rglob('*')):
             rel = f.relative_to(app)
@@ -451,6 +686,63 @@ def step_paquet_complet(version):
     with tarfile.open(sortie, 'w:gz') as t:
         t.add(PKG, arcname=NOM)
     log(f'paquet complet : {nom} ({sortie.stat().st_size/1e6:.0f} Mo)')
+    if KIT.get('passerelle_pyinstaller') and architecture() == 'x86_64':
+        step_passerelle(version, sortie)
+    return sortie
+
+
+#: Passerelle des anciens paquets Linux PyInstaller (kit.json
+#: « passerelle_pyinstaller ») : leur mise a jour automatique telechargeait
+#: « <Nom>-X-linux.AppImage » et le posait A LA PLACE de l'AppImage installee.
+#: Ce fichier-ci porte ce nom mais n'est pas une AppImage : c'est un script
+#: auto-extractible. Lance (par l'ancienne application qui se relance, puis a
+#: chaque ouverture depuis l'ancien emplacement), il installe le paquet du kit
+#: dans le profil comme installer.sh s'il est absent ou plus ancien, puis
+#: lance la copie installee — qui se met a jour seule ensuite.
+PASSERELLE_SH = r"""#!/bin/sh
+# __NOM__ __VERSION__ : passerelle de l'ancien paquet AppImage vers le paquet
+# installe dans le profil (mise a jour automatique). Bridge from the former
+# AppImage to the self-updating package installed in the user's profile.
+VERSION=__VERSION__
+NOM_APP=__NOM__
+TECH=__TECH__
+DONNEES="${XDG_DATA_HOME:-$HOME/.local/share}"
+CIBLE="$DONNEES/$TECH"
+INSTALLEE=""
+if [ -f "$CIBLE/app/__FICHIER_VERSION__" ]; then
+    INSTALLEE=$(tr -d ' 
+' < "$CIBLE/app/__FICHIER_VERSION__")
+fi
+PLUS_RECENTE=$(printf '%s
+%s
+' "$VERSION" "$INSTALLEE" | sort -V | tail -n 1)
+if [ ! -x "$CIBLE/$NOM_APP.sh" ] || [ -z "$INSTALLEE" ] ||    { [ "$PLUS_RECENTE" = "$VERSION" ] && [ "$VERSION" != "$INSTALLEE" ]; }; then
+    TMP=$(mktemp -d) || exit 1
+    LIGNE=$(awk '/^__ARCHIVE_SUIT__$/ { print NR + 1; exit 0 }' "$0")
+    if ! tail -n +"$LIGNE" "$0" | tar xzf - -C "$TMP" ||        ! sh "$TMP/$NOM_APP/installer.sh" >/dev/null; then
+        rm -rf "$TMP"
+        echo "Installation impossible / Installation failed: $CIBLE" >&2
+        exit 1
+    fi
+    rm -rf "$TMP"
+fi
+exec "$CIBLE/$NOM_APP.sh" "$@"
+__ARCHIVE_SUIT__
+"""
+
+
+def step_passerelle(version, archive: Path):
+    nom = f'{NOM}-{version}-linux.AppImage'
+    sortie = ROOT / nom
+    texte = (PASSERELLE_SH.replace('__NOM__', NOM).replace('__TECH__', NOM_TECHNIQUE)
+             .replace('__VERSION__', version)
+             .replace('__FICHIER_VERSION__', KIT.get('fichier_version', 'VERSION')))
+    with open(sortie, 'wb') as f:
+        f.write(texte.encode('utf-8'))
+        with open(archive, 'rb') as a:
+            shutil.copyfileobj(a, f)
+    sortie.chmod(0o755)
+    log(f'passerelle des anciens paquets : {nom}')
     return sortie
 
 
@@ -468,8 +760,10 @@ def main():
     exe = step_python()
     step_deps(exe)
     step_app()
+    step_outils()
     step_lanceur()
     step_elaguer()
+    step_controler_qt()
     step_verifier(version)
     step_archive(version)
     step_paquet_complet(version)

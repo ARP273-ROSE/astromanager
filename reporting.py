@@ -164,10 +164,23 @@ def anonymiser(texte: str | None) -> str:
     if not texte:
         return ''
     import re
+    texte = str(texte)
+    # Nom de la machine et nom d'utilisateur : jamais transmis (repris de
+    # Coupole), même hors d'un chemin (« Connexion à MON-PC refusée »).
+    try:
+        hote = platform.node()
+        if hote and len(hote) > 2:
+            texte = re.sub(r'(?<![A-Za-z0-9])%s(?![A-Za-z0-9])' % re.escape(hote), '<poste>', texte)
+    except Exception:
+        pass
     home = str(Path.home())
     for variante in (home.replace('\\', '/'), home, home.lower()):
-        if variante:
+        if variante and len(variante) > 1:
             texte = texte.replace(variante, '~')
+    for var in ('USERNAME', 'USER', 'LOGNAME'):
+        nom = os.environ.get(var)
+        if nom and len(nom) > 2:
+            texte = re.sub(r'(?<![A-Za-z0-9])%s(?![A-Za-z0-9])' % re.escape(nom), '<utilisateur>', texte)
     # C:\Musique\Artiste\Album\03 Titre.mp3  ->  C:\Musique\…\03 Titre.mp3
     texte = re.sub(r'([A-Za-z]:\\[^\\\n"\']{1,30})(\\[^\\\n"\']{1,60}){2,}\\',
                    r'\1\\…\\', texte)
@@ -225,7 +238,12 @@ def _place_libre_go(dossier) -> float:
 def _machine() -> dict:
     """Le strict nécessaire pour reproduire un problème."""
     infos = {
-        'poste': platform.node() or '?',
+        # Par défaut le nom de la machine, pour reconnaître un poste suivi ;
+        # voir l'option kit.json « rapports.poste » (_poste). L'identifiant
+        # aléatoire part en plus, pour distinguer deux installations d'une
+        # même machine.
+        'poste': _poste(),
+        'installation': _identifiant_installation(),
         'os': f"{platform.system()} {platform.release()}",
         'os_detail': platform.version(),
         'arch': platform.machine(),
@@ -239,6 +257,50 @@ def _machine() -> dict:
     infos['application'] = APPLICATION
     infos['version'] = VERSION_APP or '?'
     return infos
+
+
+def _poste() -> str:
+    """Ce que le champ « poste » transmet.
+
+    Par défaut le NOM DE LA MACHINE (kit.json « rapports.poste » = « machine »).
+    Une application utilisée par des tiers (Coupole, par d'autres étudiants)
+    met « installation » : le nom de la machine — qui peut contenir un prénom,
+    « PC-de-Marie » — n'est alors jamais transmis, l'identifiant aléatoire le
+    remplace. Le nom reste lu localement pour être masqué dans les traces."""
+    mode = ((_lire_kit().get('rapports') or {}).get('poste') or 'machine')
+    if mode == 'installation':
+        return _identifiant_installation()
+    return platform.node() or '?'
+
+
+def _identifiant_installation() -> str:
+    """Identifiant aleatoire tire au premier rapport et garde avec le
+    consentement ; il ne dit rien de la machine ni de son proprietaire."""
+    ident = _reglages.get('id_installation')
+    if not ident:
+        import uuid
+        ident = _reglages['id_installation'] = 'install-' + uuid.uuid4().hex[:12]
+        _ecrire_reglages()
+    return ident
+
+
+#: Bornes d'un rapport : un champ texte garde sa FIN (le bas d'une trace est
+#: ce qui compte), une structure est tronquee (repris de Coupole).
+CHAMP_MAX = 8000
+
+
+def _borner(valeur, profondeur=0):
+    if isinstance(valeur, str):
+        return anonymiser(valeur[-CHAMP_MAX:] if len(valeur) > CHAMP_MAX else valeur)
+    if profondeur > 4:
+        return str(valeur)[:200]
+    if isinstance(valeur, dict):
+        return {str(k)[:80]: _borner(v, profondeur + 1) for k, v in list(valeur.items())[:100]}
+    if isinstance(valeur, (list, tuple)):
+        return [_borner(v, profondeur + 1) for v in list(valeur)[:200]]
+    if isinstance(valeur, (int, float, bool)) or valeur is None:
+        return valeur
+    return anonymiser(str(valeur)[:CHAMP_MAX])
 
 
 def extraits_journal(chemin, lignes_max: int = 40) -> str:
@@ -266,6 +328,101 @@ def extraits_journal(chemin, lignes_max: int = 40) -> str:
 # Envoi
 # ---------------------------------------------------------------------------
 
+# Certificats racine : le Python EMBARQUÉ ne trouve pas toujours ceux du
+# système, et celui de Windows peut proposer une chaîne périmée. Deux retours
+# d'utilisateurs (Simulateur Perce-Neige, 09 et 11/10/2026) :
+#   - Manjaro : « CERTIFICATE_VERIFY_FAILED unable to get local issuer
+#     certificate » — le Python autonome cherche les racines là où les range
+#     la machine de construction, Arch/Fedora/openSUSE les rangent ailleurs ;
+#   - Windows : « certificate has expired » sur une chaîne pourtant valide
+#     (Let's Encrypt → ISRG Root X2) : le magasin du système proposait un
+#     chemin passant par un certificat périmé.
+# D'où la cascade : magasin du système ; s'il est vide (hors Windows), les
+# emplacements connus des distributions ; et si la vérification échoue
+# quand même, certifi et les racines embarquées par l'application (kit.json
+# « racines_tls », un fichier PEM à côté du module). JAMAIS de vérification
+# désactivée.
+_EMPLACEMENTS_RACINES = (
+    '/etc/ssl/certs/ca-certificates.crt',                    # Debian, Ubuntu, Arch (lien)
+    '/etc/ca-certificates/extracted/tls-ca-bundle.pem',      # Arch, Manjaro
+    '/etc/ssl/cert.pem',                                     # Arch, Alpine, macOS
+    '/etc/pki/tls/certs/ca-bundle.crt',                      # Fedora, RHEL
+    '/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem',     # Fedora, RHEL
+    '/etc/ssl/ca-bundle.pem',                                # openSUSE
+)
+_contexte_systeme = None
+
+
+def contexte_tls():
+    """Le contexte TLS du système, complété des racines de la distribution
+    quand le Python embarqué n'en trouve aucune."""
+    global _contexte_systeme
+    if _contexte_systeme is not None:
+        return _contexte_systeme
+    import ssl
+    ctx = ssl.create_default_context()
+    if not ctx.get_ca_certs() and os.name != 'nt':
+        for f in _EMPLACEMENTS_RACINES:
+            if os.path.isfile(f):
+                try:
+                    ctx.load_verify_locations(cafile=f)
+                    break
+                except Exception:
+                    pass
+        else:
+            try:
+                import certifi
+                ctx.load_verify_locations(cafile=certifi.where())
+            except Exception:
+                pass
+    _contexte_systeme = ctx
+    return ctx
+
+
+def contexte_tls_secours():
+    """Contexte de repli : certifi et les racines embarquées par l'application
+    (kit.json « racines_tls »), ou None s'il n'y a ni l'un ni l'autre."""
+    import ssl
+    ctx = None
+    try:
+        import certifi
+        ctx = ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        ctx = None
+    nom = _lire_kit().get('racines_tls') or ''
+    if nom:
+        f = Path(__file__).resolve().parent / nom
+        if f.is_file():
+            try:
+                if ctx is None:
+                    ctx = ssl.create_default_context(cafile=str(f))
+                else:
+                    ctx.load_verify_locations(cafile=str(f))
+            except Exception:
+                pass
+    return ctx
+
+
+def ouvrir_url(requete, timeout: float = 30.0):
+    """urllib.request.urlopen avec le contexte du système, puis, si la
+    vérification du certificat échoue, avec le contexte de secours. Sert
+    aussi à updater.py. Jamais sans vérification."""
+    import ssl
+    try:
+        return urllib.request.urlopen(requete, timeout=timeout, context=contexte_tls())
+    except urllib.error.URLError as e:
+        raison = getattr(e, 'reason', e)
+        if not isinstance(raison, ssl.SSLCertVerificationError) \
+                and 'CERTIFICATE_VERIFY_FAILED' not in str(e):
+            raise
+        secours = contexte_tls_secours()
+        if secours is None:
+            raise
+        log.info("Certificat refusé par le magasin du système, nouvel essai "
+                 "avec les racines de secours : %s", e)
+        return urllib.request.urlopen(requete, timeout=timeout, context=secours)
+
+
 def _poster(charge: bytes) -> bool:
     requete = urllib.request.Request(
         ENDPOINT, data=charge, method='POST',
@@ -275,7 +432,7 @@ def _poster(charge: bytes) -> bool:
             'User-Agent': 'rapports-kit-windows',
         })
     try:
-        with urllib.request.urlopen(requete, timeout=DELAI) as r:
+        with ouvrir_url(requete, timeout=DELAI) as r:
             return 200 <= r.status < 300
     except urllib.error.HTTPError as e:
         # 4xx : le serveur a compris et refuse. Réessayer n'y changera rien,
@@ -310,9 +467,7 @@ def envoyer(genre: str, **champs) -> dict:
     rapport['genre'] = genre
     rapport['horodatage'] = time.strftime('%Y-%m-%d %H:%M:%S')
     for cle, valeur in champs.items():
-        if isinstance(valeur, str):
-            valeur = anonymiser(valeur)
-        rapport[cle] = valeur
+        rapport[cle] = _borner(valeur)
 
     if consentement() is not True:
         # Pas d'accord : on garde quand même une trace locale, pour que le
@@ -338,7 +493,7 @@ def vider_file() -> int:
     l'application avant que l'envoi n'aboutisse. Cette reprise est donc le
     chemin normal, pas un cas dégradé.
     """
-    if _dossier is None or consentement() is not True:
+    if _dossier is None:
         return 0
 
     try:
@@ -346,11 +501,21 @@ def vider_file() -> int:
     except Exception:
         return 0
 
-    # Les plus vieux d'abord, mais on ne garde que les plus récents.
+    # Les plus vieux d'abord, mais on ne garde que les plus récents — MÊME
+    # sans accord d'envoi : sinon la file d'un utilisateur qui a refusé
+    # grossissait sans fin (Simulateur Perce-Neige, 2026).
     limite = time.time() - AGE_MAX
     for vieux in fichiers[:-FILE_MAX] if len(fichiers) > FILE_MAX else []:
         vieux.unlink(missing_ok=True)
     fichiers = sorted(_dossier.glob('*.json'))
+    if consentement() is not True:
+        for f in fichiers:
+            try:
+                if f.stat().st_mtime < limite:
+                    f.unlink(missing_ok=True)
+            except Exception:
+                pass
+        return 0
 
     envoyes = 0
     for f in fichiers:
@@ -477,6 +642,12 @@ class Vigie:
         # ainsi remontes d'un poste sain : « fin du gel apres 23 573 s »,
         # soit exactement les six heures et demie d'allumage de l'ordinateur.
         self._avertissement_sans_battement = False
+        # Facultatif : fonction appelée DEPUIS LA VIGIE au début d'un gel, qui
+        # rend un dict de contexte joint au rapport (état d'un processus
+        # enfant, fin d'un journal...). La pile Python seule ne dit rien
+        # quand le blocage est natif (Simulateur Perce-Neige : fenêtre 3D
+        # embarquée qui ne répond plus). Elle ne doit pas toucher à Qt.
+        self.contexte = None
 
     def battre(self) -> None:
         """À appeler depuis le fil graphique, à intervalle régulier."""
@@ -516,10 +687,16 @@ class Vigie:
             if retard >= self.seuil and not self._signale:
                 self._signale = True
                 self._debut_gel = self._dernier
+                supplement = {}
+                if self.contexte is not None:
+                    try:
+                        supplement = {'contexte': self.contexte()}
+                    except Exception as e:
+                        supplement = {'contexte': {'erreur': repr(e)[:200]}}
                 try:
                     envoyer('gel', resume=f"interface figée depuis {retard:.0f} s",
                             retard_s=round(retard, 1), phase='debut',
-                            piles=self._piles())
+                            piles=self._piles(), **supplement)
                 except Exception:
                     log.warning("Rapport de gel impossible", exc_info=True)
 

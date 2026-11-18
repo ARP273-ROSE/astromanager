@@ -1,4 +1,4 @@
-; ---------------------------------------------------------------------------
+﻿; ---------------------------------------------------------------------------
 ; Installeur Windows — gabarit commun du kit.
 ;
 ; Rien ici n'est propre a une application : toutes les valeurs arrivent en
@@ -71,7 +71,7 @@ SolidCompression=yes
 InternalCompressLevel=max
 
 WizardStyle=modern
-ShowLanguageDialog=no
+ShowLanguageDialog=auto
 AllowNoIcons=yes
 ; Windows 10 1809 minimum, impose par Qt 6.11.
 MinVersion=10.0.17763
@@ -86,11 +86,24 @@ CloseApplications=yes
 RestartApplications=no
 
 [Languages]
+; Bilingue (standard du kit) : Inno choisit d'apres la langue de Windows ;
+; le francais d'abord, l'anglais ensuite (et pour toute autre langue).
 Name: "french"; MessagesFile: "compiler:Languages\French.isl"
+Name: "english"; MessagesFile: "compiler:Default.isl"
+
+[CustomMessages]
+french.CreerRaccourci=Créer un raccourci sur le Bureau
+english.CreerRaccourci=Create a desktop shortcut
+french.Raccourcis=Raccourcis :
+english.Raccourcis=Shortcuts:
+french.Demarrer=Démarrer {#AppDisplayName}
+english.Demarrer=Start {#AppDisplayName}
+french.Desinstaller=Désinstaller {#AppDisplayName}
+english.Desinstaller=Uninstall {#AppDisplayName}
 
 [Tasks]
-Name: "desktopicon"; Description: "Créer un raccourci sur le Bureau"; \
-    GroupDescription: "Raccourcis :"; Flags: checkedonce
+Name: "desktopicon"; Description: "{cm:CreerRaccourci}"; \
+    GroupDescription: "{cm:Raccourcis}"; Flags: checkedonce
 
 [InstallDelete]
 ; L'ancienne version est effacee avant la copie.
@@ -102,6 +115,7 @@ Name: "desktopicon"; Description: "Créer un raccourci sur le Bureau"; \
 ; vivent dans %LOCALAPPDATA%\{#AppName} et ne sont pas touchees.
 Type: filesandordirs; Name: "{app}\app"
 Type: filesandordirs; Name: "{app}\python"
+Type: filesandordirs; Name: "{app}\outils"
 
 [Files]
 ; Tout le paquet : python embarque, code applicatif, binaires eventuels.
@@ -118,7 +132,7 @@ Name: "{group}\{#AppDisplayName}"; Filename: "{app}\python\pythonw.exe"; \
 ; l'erreur. Le guide d'installation y renvoie.
 Name: "{group}\Diagnostic"; Filename: "{app}\Diagnostic.bat"; \
     WorkingDir: "{app}"; IconFilename: "{app}\app\{#IconFile}"
-Name: "{group}\Désinstaller {#AppDisplayName}"; Filename: "{uninstallexe}"
+Name: "{group}\{cm:Desinstaller}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#AppDisplayName}"; Filename: "{app}\python\pythonw.exe"; \
     Parameters: """{app}\app\{#Entry}"""; \
     WorkingDir: "{app}\app"; IconFilename: "{app}\app\{#IconFile}"; \
@@ -127,7 +141,7 @@ Name: "{autodesktop}\{#AppDisplayName}"; Filename: "{app}\python\pythonw.exe"; \
 [Run]
 Filename: "{app}\python\pythonw.exe"; Parameters: """{app}\app\{#Entry}"""; \
     WorkingDir: "{app}\app"; \
-    Description: "Démarrer {#AppDisplayName}"; \
+    Description: "{cm:Demarrer}"; \
     Flags: nowait postinstall skipifsilent
 
 [UninstallDelete]
@@ -151,10 +165,17 @@ begin
       // Le nom de l'application n'apparait pas dans ce message, et c'est
       // volontaire : une apostrophe dans le nom (« Machine d'Anticythere »)
       // terminerait la chaine Pascal et le script ne compilerait plus.
-      MsgBox('La desinstallation est terminee.' + #13#10 + #13#10 +
-             'Vos donnees ont ete conservees dans :' + #13#10 + DataDir + #13#10 + #13#10 +
-             'Si vous reinstallez cette application, vous les retrouverez ' +
-             'telles quelles. Pour tout effacer, supprimez ce dossier a la main.',
-             mbInformation, MB_OK);
+      if ActiveLanguage = 'french' then
+        MsgBox('La desinstallation est terminee.' + #13#10 + #13#10 +
+               'Vos donnees ont ete conservees dans :' + #13#10 + DataDir + #13#10 + #13#10 +
+               'Si vous reinstallez cette application, vous les retrouverez ' +
+               'telles quelles. Pour tout effacer, supprimez ce dossier a la main.',
+               mbInformation, MB_OK)
+      else
+        MsgBox('Uninstallation complete.' + #13#10 + #13#10 +
+               'Your data has been kept in:' + #13#10 + DataDir + #13#10 + #13#10 +
+               'If you reinstall this application you will find it unchanged. ' +
+               'To erase everything, delete this folder by hand.',
+               mbInformation, MB_OK);
   end;
 end;
