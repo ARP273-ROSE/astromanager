@@ -62,5 +62,6 @@
   "description_en": "Astrophotography file manager and analyser (FITS, XISF)",
   "categories_linux": "Science;Astronomy;Graphics;",
   "icone_icns": "assets/icon.icns",
-  "cle_publique_maj": "kHjUuLfq9BPw5+cmaBXwqFGMR4J9Jq5r0wBQLybZN0s="
+  "cle_publique_maj": "kHjUuLfq9BPw5+cmaBXwqFGMR4J9Jq5r0wBQLybZN0s=",
+  "release_unique": true
 }
