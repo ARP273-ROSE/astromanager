@@ -93,6 +93,12 @@ class ErreurOutil(RuntimeError):
     s'arrete (un paquet sans son outil ne se verrait que chez l'utilisateur)."""
 
 
+
+# Aucune console qui clignote sous Windows (0 ailleurs, seule valeur admise
+# hors Windows). Ecrit en clair a chaque appel : les controles statiques des
+# applications (verifier_sous_processus.py) ne lisent pas un **dict.
+_SANS_CONSOLE = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+
 def _log(msg):
     print(f'  {msg}', flush=True)
 
@@ -468,7 +474,8 @@ def poser_conda(entree: dict, dossier: Path, cache: Path, systeme: str, arch: st
         cmd = [str(mm), 'create', '-y', '--no-rc', '--no-env', '-r', str(travail / 'racine'),
                '-p', str(prefixe), '--override-channels', '-c', 'conda-forge', *entree['conda']]
         log('micromamba : ' + ' '.join(entree['conda']))
-        r = subprocess.run(cmd, env=env, capture_output=True, text=True)
+        r = subprocess.run(cmd, env=env, capture_output=True, text=True,
+                           creationflags=_SANS_CONSOLE)
         if r.returncode != 0:
             raise ErreurOutil('micromamba a echoue :\n' + (r.stdout + r.stderr)[-3000:])
         n = copier_prefixe_conda(prefixe, dossier, entree.get('executables') or [], systeme, log)
@@ -499,7 +506,7 @@ def _remplacer(args, valeurs: dict) -> list:
 
 def _executer(cmd, cwd=None, env=None) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, timeout=DELAI_ESSAI_S,
-                          **({'creationflags': 0x08000000} if sys.platform == 'win32' else {}))
+                          creationflags=_SANS_CONSOLE)
 
 
 def essayer(entree: dict, dossier: Path, systeme: str, log=_log) -> str:

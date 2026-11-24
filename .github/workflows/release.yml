@@ -191,6 +191,7 @@ jobs:
         id: kit
         shell: bash
         run: |
+          "$(command -v python3 || command -v python)" -c "import json;print('python=' + str(json.load(open('kit.json')).get('python') or '3.14'))" >> "$GITHUB_OUTPUT"
           python3 -c "import json;print('cibles=' + ' '.join(json.load(open('kit.json')).get('tests_ci') or []))" >> "$GITHUB_OUTPUT"
           # les dependances de l'APPLICATION (kit.json « requirements ») : un
           # requirements.txt de developpement peut contenir des outils sans
@@ -200,7 +201,7 @@ jobs:
         if: steps.kit.outputs.cibles != ''
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: ${{ steps.kit.outputs.python || '3.14' }}
       - name: Dependances
         if: steps.kit.outputs.cibles != ''
         run: |
@@ -235,6 +236,7 @@ jobs:
         id: kit
         shell: bash
         run: |
+          "$(command -v python3 || command -v python)" -c "import json;print('python=' + str(json.load(open('kit.json')).get('python') or '3.14'))" >> "$GITHUB_OUTPUT"
           python - <<'PY' >> "$GITHUB_OUTPUT"
           import json, pathlib
           k = json.loads(pathlib.Path('kit.json').read_text(encoding='utf-8'))
@@ -324,7 +326,7 @@ jobs:
       - name: Installer Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: ${{ steps.kit.outputs.python || '3.14' }}
 
       # Controles statiques, quand le depot les embarque. Ils sont facultatifs
       # par construction : un projet qui ne les a pas passe outre sans echouer.
@@ -512,6 +514,7 @@ jobs:
         id: kit
         shell: bash
         run: |
+          "$(command -v python3 || command -v python)" -c "import json;print('python=' + str(json.load(open('kit.json')).get('python') or '3.14'))" >> "$GITHUB_OUTPUT"
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
           import json
           k = json.load(open('kit.json'))
@@ -549,7 +552,7 @@ jobs:
       - name: Python de construction
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: ${{ steps.kit.outputs.python || '3.14' }}
 
       # PyQt6 a besoin de ces bibliotheques pour seulement s'importer sur un
       # runner Linux sans serveur graphique ; sans elles, la verification
@@ -668,6 +671,7 @@ jobs:
         id: kit
         shell: bash
         run: |
+          "$(command -v python3 || command -v python)" -c "import json;print('python=' + str(json.load(open('kit.json')).get('python') or '3.14'))" >> "$GITHUB_OUTPUT"
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
           import json
           k = json.load(open('kit.json'))

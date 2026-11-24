@@ -52,14 +52,33 @@ DIST = ROOT / 'dist'
 PKG = DIST / NOM
 CACHE = ROOT / '.build_cache'
 
-PY_VERSION = '3.12.10'
+# 3.12 n'a plus que des correctifs de securite, publies en SOURCES : python.org
+# ne construit plus sa distribution Windows embeddable depuis la 3.12.10, si
+# bien qu'aucun de ces correctifs n'arrivait dans les paquets. 3.14 est
+# maintenue avec binaires (verifie sur MountMonitor 4.5.5, 24/11/2026).
+# Branche choisie par kit.json « python » (3.14 par defaut) : une application
+# dont une dependance n'a pas encore de roue pour 3.14 reste sur 3.13 (Coupole :
+# sep). SHA-256 de chaque archive, pris dans la nomenclature de python.org
+# (<zip>.spdx.json) : l'interpreteur livre a chaque utilisateur est verifie
+# avant d'etre deplie.
+PYTHONS_WINDOWS = {
+    '3.14': ('3.14.10', '90905e64a840557d8c1bc4f5b74db3d7ee85e3ffb217611cac1c7813acea4159'),
+    '3.13': ('3.13.17', '9e35319bffedab8b36ad44d8f377cb4f1733bcec257a0b6d04d94f01486ddb38'),
+}
+PY_VERSION, PY_EMBED_SHA256 = PYTHONS_WINDOWS[str(KIT.get('python') or '3.14')]
 PY_EMBED_URL = (f'https://www.python.org/ftp/python/{PY_VERSION}/'
                 f'python-{PY_VERSION}-embed-amd64.zip')
 # pip pose depuis sa roue : le get-pip.py actuel refuse de s'installer sous Windows
 # (« To modify pip, please run… », 03/11/2026). Roue pure Python, simple archive.
-PIP_VERSION = '25.2'
+# 26.x : les sources sans pyproject.toml passent par le backend PEP 517 de
+# setuptools, qui met le dossier du paquet dans le chemin. pip 25.2 prenait
+# encore l'ancien « setup.py egg_info » : sous le Python embarque (._pth), un
+# setup.py qui importe un module voisin (versioneer.py de pims, tire par
+# reproject) echouait — Coupole 0.9.2, 18/11/2026.
+PIP_VERSION = '26.3'
 PIP_WHEEL_URL = (f'https://files.pythonhosted.org/packages/py3/p/pip/'
                  f'pip-{PIP_VERSION}-py3-none-any.whl')
+PIP_WHEEL_SHA256 = 'f3b60b20ffaadd4415ed7957212a38ac63fa4c5fa375bd0f4a797777940fad13'  # PyPI
 
 # Ce qui entre dans le paquet est decrit explicitement plutot que copie en
 # bloc : un depot contient aussi des scripts de maintenance, des rapports et
@@ -117,10 +136,26 @@ def fetch(url, dest):
     return dest
 
 
+def verifier_empreinte(chemin, attendue):
+    """Refuse une archive dont l'empreinte n'est pas celle figee ici
+    (telechargement altere, miroir compromis, cache corrompu)."""
+    import hashlib
+    h = hashlib.sha256()
+    with open(chemin, 'rb') as f:
+        for bloc in iter(lambda: f.read(1 << 20), b''):
+            h.update(bloc)
+    if h.hexdigest() != attendue:
+        chemin.unlink(missing_ok=True)
+        raise SystemExit(f'Empreinte inattendue pour {chemin.name} : '
+                         f'{h.hexdigest()} au lieu de {attendue}')
+    log(f'empreinte verifiee : {chemin.name}')
+
+
 def step_python():
     """Deplie la distribution embeddable et lui rend l'acces a site-packages."""
     py_dir = PKG / 'python'
     zip_path = fetch(PY_EMBED_URL, CACHE / f'python-{PY_VERSION}-embed.zip')
+    verifier_empreinte(zip_path, PY_EMBED_SHA256)
     py_dir.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(zip_path) as z:
         z.extractall(py_dir)
@@ -146,6 +181,7 @@ def step_python():
 
     exe = py_dir / 'python.exe'
     roue = fetch(PIP_WHEEL_URL, CACHE / f'pip-{PIP_VERSION}.whl')
+    verifier_empreinte(roue, PIP_WHEEL_SHA256)
     log('installation de pip')
     site = py_dir / 'Lib' / 'site-packages'
     site.mkdir(parents=True, exist_ok=True)
