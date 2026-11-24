@@ -615,6 +615,31 @@ class XISFWriter:
 # XISF READER - Enhanced, supports all codecs
 # ============================================================================
 
+_XISF_CHECKSUMS = {
+    'sha1': hashlib.sha1, 'sha-1': hashlib.sha1,
+    'sha256': hashlib.sha256, 'sha-256': hashlib.sha256,
+    'sha512': hashlib.sha512, 'sha-512': hashlib.sha512,
+    'sha3-256': hashlib.sha3_256, 'sha3-512': hashlib.sha3_512,
+}
+
+
+def verify_xisf_checksum(block: bytes, checksum: str) -> None:
+    """Verifie l'attribut checksum="algo:hex" d'un bloc XISF (spec 10.5).
+
+    L'empreinte porte sur le bloc TEL QUE STOCKE (donc compresse), avant
+    decompression. Algorithme inconnu -> ignore (comme la lib PyPI).
+    """
+    if not checksum:
+        return
+    algo, _, digest = checksum.partition(':')
+    h = _XISF_CHECKSUMS.get(algo.strip().lower())
+    if h is None:
+        logger.warning("XISF checksum algorithm not supported: %s", algo)
+        return
+    if h(block).hexdigest() != digest.strip().lower():
+        raise ValueError(f"XISF checksum mismatch ({algo}): altered or corrupted data block")
+
+
 class XISFReader:
     """Read XISF files with any compression codec."""
 
@@ -770,6 +795,9 @@ class XISFReader:
             # Read compressed data
             f.seek(data_offset)
             raw_read = f.read(compressed_size)
+            if len(raw_read) != compressed_size:
+                raise ValueError(f"Truncated XISF: data block {len(raw_read)}/{compressed_size} bytes")
+            verify_xisf_checksum(raw_read, image.get('checksum'))
 
         # Decompress
         raw_data = decompress_data(raw_read, codec, uncompressed_size,
